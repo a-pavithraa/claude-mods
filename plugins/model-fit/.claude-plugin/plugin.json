@@ -1,0 +1,6 @@
+{
+  "name": "model-fit",
+  "version": "0.2.0",
+  "description": "Says when the model or effort is too big or too small for the task at hand, what the turn will roughly cost, and when the context has grown expensive.",
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "quiz-me",
+  "version": "0.1.0",
+  "description": "Asks three questions about what this session changed, so you can check you understand it.",
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,9 @@
+{
+  "name": "my-mods",
+  "owner": { "name": "pavithra-aravamudhan" },
+  "plugins": [
+    { "name": "triage-gate", "source": "./plugins/triage-gate" },
+    { "name": "quiz-me", "source": "./plugins/quiz-me" },
+    { "name": "model-fit", "source": "./plugins/model-fit" }
+  ]
+}

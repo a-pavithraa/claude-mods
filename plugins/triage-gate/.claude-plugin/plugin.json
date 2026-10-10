@@ -1,0 +1,22 @@
+{
+  "name": "triage-gate",
+  "version": "0.6.0",
+  "description": "Flags a turn that wrote a lot and offers a /guide reading order; before Claude commits, measures the change's blast radius and asks Jev about risk and readability, then lets it through, flags it, or holds it for review.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "typesafeApiKey": {
+      "type": "string",
+      "title": "TypeSafe API key",
+      "description": "Key for Jev. Left empty, TYPESAFE_API_KEY is used; with neither, triage uses blast radius alone.",
+      "sensitive": true,
+      "required": false
+    },
+    "codexModel": {
+      "type": "string",
+      "title": "Codex review model",
+      "description": "Model for the Codex review, for example a cheaper one. Left empty, Codex uses its own default.",
+      "sensitive": false,
+      "required": false
+    }
+  }
+}
