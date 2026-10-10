@@ -1,9 +1,24 @@
 {
   "name": "my-mods",
-  "owner": { "name": "pavithra-aravamudhan" },
+  "owner": {
+    "name": "a-pavithraa"
+  },
   "plugins": [
-    { "name": "triage-gate", "source": "./plugins/triage-gate" },
-    { "name": "quiz-me", "source": "./plugins/quiz-me" },
-    { "name": "model-fit", "source": "./plugins/model-fit" }
+    {
+      "name": "triage-gate",
+      "source": "./plugins/triage-gate"
+    },
+    {
+      "name": "quiz-me",
+      "source": "./plugins/quiz-me"
+    },
+    {
+      "name": "model-fit",
+      "source": "./plugins/model-fit"
+    },
+    {
+      "name": "hindsight",
+      "source": "./plugins/hindsight"
+    }
   ]
 }

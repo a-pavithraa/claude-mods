@@ -1,0 +1,6 @@
+{
+  "name": "hindsight",
+  "version": "0.1.0",
+  "description": "Notices snags that come back across sessions (search spirals, fix loops, large tool outputs) and offers one change to the environment that stops them.",
+  "types": "./types/index.d.ts"
+}
