@@ -165,6 +165,8 @@ export const register: Register = on => {
     session.model = typeof settings.model === 'string' ? settings.model : undefined
     session.effort = asEffort(settings.effortLevel)
     session.history = asHistory(await $.store.get(HISTORY_KEY))
+    // Advice belongs to a running turn; a reload or resume must not draw the last one again.
+    await update($, advice, () => null)
     await $.command.register({ name: 'fit', description: 'Model fit: what tasks cost so far; "/fit reset" forgets it' })
 
     return next(e)

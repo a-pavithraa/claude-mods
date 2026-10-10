@@ -327,3 +327,16 @@ test('a turn the person did not start keeps the advice and is not judged', async
   expect(seen.classified).toHaveLength(1)
   expect(await (await band($)).find({ text: /Looks complex · on Haiku/ })).toBeDefined()
 })
+
+test('a reload does not draw the last turn\'s advice again', async ($, on) => {
+  const { clock } = world(on, { model: 'haiku', label: 'complex' })
+  await start($)
+  await ask($, 'design a plugin system for the exporter and migrate the three formats to it', 't1')
+  await clock.settle()
+
+  expect(await (await band($)).find({ text: /Looks complex/ })).toBeDefined()
+
+  await start($)
+
+  expect(await (await band($)).find({ text: /Looks complex/ })).toBeUndefined()
+})
