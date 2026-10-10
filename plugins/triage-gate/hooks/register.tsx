@@ -26,6 +26,7 @@ const UNTRACKED_CHARS = 4000
 const FAN_IN_FILES = 15
 const REVIEW_CHARS = 20_000
 const REVIEW_TIMEOUT_MS = 600_000
+const TIMED_OUT = 'timed out'
 const BAR_CELLS = 10
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 const GOOD_WHEN_HIGH = new Set(['tested'])
@@ -37,8 +38,9 @@ const turn = atom({ plugin: 'triage-gate', key: 'turn' } as const, emptyTally())
 const sizeSeen = atom({ plugin: 'triage-gate', key: 'sizeLevel' } as const, 0)
 const asks = atom({ plugin: 'triage-gate', key: 'asks' } as const, [])
 
-const BADGE: Record<Verdict, { mark: string; word: string; tone: 'success' | 'warning' | 'error' }> = {
-  pass: { mark: '●', word: 'PASS', tone: 'success' },
+/** A pass only means no trigger fired, not that the change is safe, so it is not drawn in green. */
+const BADGE: Record<Verdict, { mark: string; word: string; tone: 'suggestion' | 'warning' | 'error' }> = {
+  pass: { mark: '○', word: 'NO REVIEW TRIGGER', tone: 'suggestion' },
   read: { mark: '◐', word: 'READ IT', tone: 'warning' },
   hold: { mark: '■', word: 'HOLD FOR REVIEW', tone: 'error' },
 }
@@ -189,6 +191,40 @@ async function briefOf($: EngineInterface) {
   return reply?.isAnswered === true ? reply.text.trim().slice(0, BRIEF_CHARS) : undefined
 }
 
+/** What this verdict rests on, so a pass from local checks alone is not read as a full one. */
+function coverageOf(judged: Triage) {
+  const { jev } = judged
+
+  if (jev.status === 'off') return 'Local checks only: size, spread and file paths. Jev is not configured.'
+  if (jev.status === 'failed') return `Local checks only: Jev gave no judgement. ${jev.note}`
+  if (judged.isPatchCut) return `Partial: Jev saw only the first ${PATCH_CHARS / 1000}k characters of the diff.`
+
+  return 'Local checks and Jev, on the whole diff.'
+}
+
+function reviewHeadline(done: Extract<Review, { status: 'done' }>) {
+  if (done.findings.length > 0) return `Codex found ${done.findings.length} ${done.findings.length === 1 ? 'problem' : 'problems'}`
+  if (done.isTimedOut === true) return 'Codex review timed out; it listed no findings'
+  if (!done.isClean) return 'Codex review failed; it listed no findings'
+
+  return 'Codex review finished with no findings listed'
+}
+
+/** Puts `text` in the prompt box after whatever the user has typed there, never over it. */
+async function fillKeepingDraft($: EngineInterface, text: string) {
+  const draft = (await $.prompt.read()).text
+
+  return draft.trim() === ''
+    ? $.prompt.fill({ text, mode: 'replace' })
+    : $.prompt.fill({ text: `
+
+${text}`, mode: 'append' })
+}
+
+async function markEdited($: EngineInterface) {
+  await update($, review, held => (held.status === 'done' && held.isEdited !== true ? { ...held, isEdited: true } : held))
+}
+
 async function runCodex($: EngineInterface, options: PluginOptions, focus = '') {
   const startedAt = Date.now()
   const judged = await read($, triage)
@@ -203,6 +239,11 @@ async function runCodex($: EngineInterface, options: PluginOptions, focus = '') 
   const codex = ['codex', 'exec', 'review', ...model, '-']
   const said = { stdout: '', stderr: '' }
   let exit: number | null | undefined
+  let isTimedOut = false
+  const deadline = $.clock.sleep(REVIEW_TIMEOUT_MS).then(
+    (): typeof TIMED_OUT => TIMED_OUT,
+    () => new Promise<never>(() => undefined),
+  )
 
   try {
     const child = $.process.spawn({
@@ -210,7 +251,18 @@ async function runCodex($: EngineInterface, options: PluginOptions, focus = '') 
       input: reviewPrompt(judged, focus, intent),
     })
 
-    for await (const piece of child) {
+    for (;;) {
+      const pulled = await Promise.race([child.next(), deadline])
+
+      if (pulled === TIMED_OUT) {
+        isTimedOut = true
+        void child.return({ code: null, signal: null }).catch(() => undefined)
+        break
+      }
+
+      if (pulled.done === true) break
+
+      const piece = pulled.value
       said[piece.stream] += piece.text
       const tookMs = Date.now() - startedAt
       const doing = lastLine(piece.text)
@@ -221,11 +273,9 @@ async function runCodex($: EngineInterface, options: PluginOptions, focus = '') 
         tookMs,
         ...(doing !== undefined ? { doing } : held.status === 'running' && held.doing !== undefined ? { doing: held.doing } : {}),
       }))
-
-      if (tookMs > REVIEW_TIMEOUT_MS) break
     }
 
-    exit = (await child.result.catch(() => ({ code: null }))).code
+    exit = isTimedOut ? null : (await child.result.catch(() => ({ code: null }))).code
   } catch {
     exit = undefined
   }
@@ -233,7 +283,9 @@ async function runCodex($: EngineInterface, options: PluginOptions, focus = '') 
   const text =
     exit === undefined
       ? 'Codex could not be started. Is the codex CLI installed and logged in?'
-      : (said.stdout.trim() || said.stderr.trim() || 'Codex printed nothing.').slice(-REVIEW_CHARS)
+      : isTimedOut
+        ? `Codex was stopped after ${REVIEW_TIMEOUT_MS / 60_000} minutes. ${lastLine(said.stdout) ?? lastLine(said.stderr) ?? ''}`.trim()
+        : (said.stdout.trim() || said.stderr.trim() || 'Codex printed nothing.').slice(-REVIEW_CHARS)
   const done: Review = {
     status: 'done',
     covers,
@@ -241,6 +293,7 @@ async function runCodex($: EngineInterface, options: PluginOptions, focus = '') 
     ...parseReview(text),
     tookMs: Date.now() - startedAt,
     isClean: exit === 0,
+    ...(isTimedOut ? { isTimedOut } : {}),
     ...(fingerprint === undefined ? {} : { fingerprint }),
   }
   await update($, review, () => done)
@@ -343,6 +396,7 @@ export const register: Register = (on, options) => {
 
     if (ran.deny === undefined && ran.isError !== true) {
       await update($, turn, held => addWrite(held, e.file_path, e.new_string))
+      await markEdited($)
     }
 
     return ran
@@ -353,6 +407,7 @@ export const register: Register = (on, options) => {
 
     if (ran.deny === undefined && ran.isError !== true) {
       await update($, turn, held => addWrite(held, e.file_path, e.content))
+      await markEdited($)
     }
 
     return ran
@@ -370,7 +425,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'guide' }, async $ => {
     const prompt = guidePrompt((await read($, turn)).files)
-    const filled = await $.prompt.fill({ text: prompt, mode: 'replace' })
+    const filled = await fillKeepingDraft($, prompt)
 
     return {
       text: filled.isFilled
@@ -410,12 +465,7 @@ export const register: Register = (on, options) => {
       void openPane($)
       const done = await runCodex($, options, asked.slice('codex'.length).trim())
 
-      return {
-        text:
-          done.findings.length > 0
-            ? `Codex found ${done.findings.length} ${done.findings.length === 1 ? 'problem' : 'problems'}. See the Triage pane.`
-            : 'Codex review finished with no findings listed. See the Triage pane.',
-      }
+      return { text: `${reviewHeadline(done)}. See the Triage pane.` }
     }
 
     void openPane($)
@@ -430,12 +480,106 @@ export const register: Register = (on, options) => {
     const reviewed = await read($, review)
     const isApproved = judged !== null && (await read($, approved)).includes(judged.fingerprint)
 
+    const isStale =
+      reviewed.status === 'done' &&
+      (reviewed.isEdited === true ||
+        (judged !== null && reviewed.fingerprint !== undefined && reviewed.fingerprint !== judged.fingerprint))
+    const reviewBox = (
+      <Box flexDirection="column">
+        {reviewed.status === 'running' && (
+          <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="suggestion" paddingX={1}>
+            <Box>
+              <Text bold color="suggestion">
+                Codex is reviewing…
+              </Text>
+              <Box flexGrow={1} />
+              <Text dimColor>{tookOf(reviewed.tookMs)}</Text>
+            </Box>
+            <Text dimColor wrap="truncate-end">
+              {reviewed.doing ?? 'Starting Codex. A review usually takes a few minutes.'}
+            </Text>
+            <Text dimColor wrap="wrap">
+              Reviewing {reviewed.covers}. This run is billed to your Codex account.
+            </Text>
+          </Box>
+        )}
+
+        {reviewed.status === 'done' && (
+          <Box
+            flexDirection="column"
+            marginTop={1}
+            borderStyle="round"
+            borderColor={reviewed.findings.length > 0 || !reviewed.isClean ? 'warning' : 'subtle'}
+            paddingX={1}
+          >
+            <Box>
+              <Text bold color={reviewed.findings.length > 0 || !reviewed.isClean ? 'warning' : 'success'}>
+                {reviewHeadline(reviewed)}
+              </Text>
+              <Box flexGrow={1} />
+              <Text dimColor>{tookOf(reviewed.tookMs)}</Text>
+            </Box>
+            <Text dimColor wrap="wrap">
+              Covered {reviewed.covers}.
+            </Text>
+            {reviewed.brief !== undefined && (
+              <Box flexDirection="column">
+                <Text dimColor>Codex was told this is what was built:</Text>
+                <Text dimColor wrap="wrap">
+                  {reviewed.brief}
+                </Text>
+              </Box>
+            )}
+            {isStale && (
+              <Text color="warning" wrap="wrap">
+                ▲ The change has been edited since this review. Run it again.
+              </Text>
+            )}
+            {reviewed.summary !== '' && <Text wrap="wrap">{reviewed.summary}</Text>}
+            {reviewed.findings.map(one => (
+              <Box flexDirection="column" marginTop={1}>
+                <Box>
+                  <Text bold color={one.priority === 'P1' ? 'error' : 'warning'}>
+                    {one.priority}{' '}
+                  </Text>
+                  <Box flexShrink={1}>
+                    <Text bold wrap="wrap">
+                      {one.title}
+                    </Text>
+                  </Box>
+                </Box>
+                <Text color="suggestion" wrap="truncate-end">
+                  ↳ {one.at}
+                </Text>
+                <Text dimColor wrap="wrap">
+                  {one.body}
+                </Text>
+              </Box>
+            ))}
+            {reviewed.findings.length > 0 && (
+              <Box marginTop={1}>
+                <Button
+                  key="fix"
+                  label="Send to Claude"
+                  variant="primary"
+                  onPress={async () => {
+                    await fillKeepingDraft($, fixPrompt(reviewed.findings))
+                  }}
+                />
+              </Box>
+            )}
+          </Box>
+        )}
+      </Box>
+    )
+
     if (judged === null) {
       return (
         <Box flexDirection="column">
           <Text dimColor wrap="wrap">
             Nothing triaged yet. Triage runs when Claude commits, or type /gate.
           </Text>
+          {reviewBox}
         </Box>
       )
     }
@@ -470,6 +614,9 @@ export const register: Register = (on, options) => {
           <Text dimColor>risk {judged.points}</Text>
           {isApproved && <Text color="success"> · approved</Text>}
         </Box>
+        <Text color={jev.status === 'judged' && !judged.isPatchCut ? undefined : 'warning'} dimColor={jev.status === 'judged' && !judged.isPatchCut} wrap="wrap">
+          {coverageOf(judged)}
+        </Text>
 
         <Box marginTop={1}>
           <Text bold color="claude">
@@ -502,11 +649,7 @@ export const register: Register = (on, options) => {
             Not configured. Set the TypeSafe API key in /config or TYPESAFE_API_KEY.
           </Text>
         )}
-        {jev.status === 'failed' && (
-          <Text color="warning" wrap="wrap">
-            {jev.note}
-          </Text>
-        )}
+        {jev.status === 'failed' && <Text dimColor>No judgement this time; see the line under the verdict.</Text>}
         {jev.status === 'judged' &&
           table(
             [18, BAR_CELLS, 5],
@@ -524,9 +667,6 @@ export const register: Register = (on, options) => {
               ]
             }),
           )}
-        {judged.isPatchCut && (
-          <Text dimColor>Jev saw the first {PATCH_CHARS / 1000}k characters of the diff.</Text>
-        )}
 
         {judged.reasons.length > 0 && (
           <Box marginTop={1}>
@@ -560,92 +700,7 @@ export const register: Register = (on, options) => {
           )}
         </Box>
 
-        {reviewed.status === 'running' && (
-          <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="suggestion" paddingX={1}>
-            <Box>
-              <Text bold color="suggestion">
-                Codex is reviewing…
-              </Text>
-              <Box flexGrow={1} />
-              <Text dimColor>{tookOf(reviewed.tookMs)}</Text>
-            </Box>
-            <Text dimColor wrap="truncate-end">
-              {reviewed.doing ?? 'Starting Codex. A review usually takes a few minutes.'}
-            </Text>
-            <Text dimColor wrap="wrap">
-              Reviewing {reviewed.covers}. This run is billed to your Codex account.
-            </Text>
-          </Box>
-        )}
-
-        {reviewed.status === 'done' && (
-          <Box
-            flexDirection="column"
-            marginTop={1}
-            borderStyle="round"
-            borderColor={reviewed.findings.length > 0 ? 'warning' : 'subtle'}
-            paddingX={1}
-          >
-            <Box>
-              <Text bold color={reviewed.findings.length > 0 ? 'warning' : 'success'}>
-                {reviewed.findings.length > 0
-                  ? `Codex found ${reviewed.findings.length} ${reviewed.findings.length === 1 ? 'problem' : 'problems'}`
-                  : 'Codex review'}
-              </Text>
-              <Box flexGrow={1} />
-              <Text dimColor>{tookOf(reviewed.tookMs)}</Text>
-            </Box>
-            <Text dimColor wrap="wrap">
-              Covered {reviewed.covers}.
-            </Text>
-            {reviewed.brief !== undefined && (
-              <Box flexDirection="column">
-                <Text dimColor>Codex was told this is what was built:</Text>
-                <Text dimColor wrap="wrap">
-                  {reviewed.brief}
-                </Text>
-              </Box>
-            )}
-            {reviewed.fingerprint !== judged.fingerprint && (
-              <Text color="warning" wrap="wrap">
-                ▲ The change has been edited since this review. Run it again.
-              </Text>
-            )}
-            {reviewed.summary !== '' && <Text wrap="wrap">{reviewed.summary}</Text>}
-            {reviewed.findings.map(one => (
-              <Box flexDirection="column" marginTop={1}>
-                <Box>
-                  <Text bold color={one.priority === 'P1' ? 'error' : 'warning'}>
-                    {one.priority}{' '}
-                  </Text>
-                  <Box flexShrink={1}>
-                    <Text bold wrap="wrap">
-                      {one.title}
-                    </Text>
-                  </Box>
-                </Box>
-                <Text color="suggestion" wrap="truncate-end">
-                  ↳ {one.at}
-                </Text>
-                <Text dimColor wrap="wrap">
-                  {one.body}
-                </Text>
-              </Box>
-            ))}
-            {reviewed.findings.length > 0 && (
-              <Box marginTop={1}>
-                <Button
-                  key="fix"
-                  label="Send to Claude"
-                  variant="primary"
-                  onPress={async () => {
-                    await $.prompt.fill({ text: fixPrompt(reviewed.findings), mode: 'replace' })
-                  }}
-                />
-              </Box>
-            )}
-          </Box>
-        )}
+        {reviewBox}
       </Box>
     )
   })

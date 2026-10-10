@@ -1,4 +1,5 @@
 import type { Blast, Jev, Verdict } from '../types'
+import { SENSITIVE_PATH } from './blast'
 
 const MANY_LINES = 400
 const SOME_LINES = 150
@@ -58,7 +59,15 @@ export function verdictOf(blast: Blast, jev: Jev) {
     if ((value('mixed') ?? 0) >= LIKELY) add(1, 'Jev: mixes unrelated changes; splitting it would help')
   }
 
-  const verdict: Verdict = points >= HOLD_AT ? 'hold' : points >= READ_AT ? 'read' : 'pass'
+  // Consequence is judged apart from size: a small change to sensitive code is never a pass.
+  const sensitive = blast.files.filter(file => SENSITIVE_PATH.test(file.path)).map(file => file.path)
+  const security = jev.status === 'judged' ? jev.judgments.find(one => one.key === 'security')?.value ?? 0 : 0
+
+  if (sensitive.length > 0) reasons.push(`changes sensitive code: ${sensitive.join(', ')}`)
+  if (security >= LIKELY) reasons.push('held for review because Jev judges it likely to touch security')
+
+  const bySize: Verdict = points >= HOLD_AT ? 'hold' : points >= READ_AT ? 'read' : 'pass'
+  const verdict: Verdict = security >= LIKELY ? 'hold' : sensitive.length > 0 && bySize === 'pass' ? 'read' : bySize
 
   return { verdict, points, reasons }
 }

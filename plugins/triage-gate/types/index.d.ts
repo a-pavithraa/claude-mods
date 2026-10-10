@@ -56,6 +56,9 @@ export type Review =
       findings: Finding[]
       tookMs: number
       isClean: boolean
+      isTimedOut?: boolean
+      /** Claude edited a file after the review; set by the Edit and Write hooks. */
+      isEdited?: boolean
       fingerprint?: string
       brief?: string
     }

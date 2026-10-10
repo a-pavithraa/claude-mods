@@ -2,6 +2,9 @@ import type { Blast, ChangedFile } from '../types'
 
 const RISKY_PATH =
   /(^|\/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|pom\.xml|build\.gradle(\.kts)?|Cargo\.toml|go\.mod|pyproject\.toml|requirements\.txt|Dockerfile|docker-compose\.ya?ml)$|(^|\/)(migrations?|\.github\/workflows|terraform|infra)\/|\.(sql|tf)$/i
+/** Code where a one-line change can matter more than its size says. */
+export const SENSITIVE_PATH =
+  /auth|login|session|token|secret|credential|password|permission|acl|polic(y|ies)|security|crypto|(^|\/)\.env/i
 const TOO_GENERIC = new Set(['index', 'main', 'mod', 'readme', 'changelog', 'license', 'types', 'utils', 'test'])
 const SHORTEST_STEM = 4
 

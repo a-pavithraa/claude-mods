@@ -1,4 +1,5 @@
 import type { Finding, Triage } from '../types'
+import { SENSITIVE_PATH } from './blast'
 
 const FILES_REVIEWED = 15
 const FINDINGS_ASKED = 5
@@ -13,17 +14,23 @@ export const addAsk = (asks: string[], text: string) => [...asks, text.slice(0, 
 export type Intent = { asks: string[]; brief?: string }
 
 export function reviewScope(judged: Triage | null, focus: string) {
-  const files = [...(judged?.blast.files ?? [])]
-    .sort((a, b) => b.added + b.removed - (a.added + a.removed))
+  const blast = judged?.blast
+  const isFlagged = (path: string) =>
+    SENSITIVE_PATH.test(path) || (blast?.risky.includes(path) ?? false) || blast?.widest?.path === path
+  const bySize = [...(blast?.files ?? [])].sort((a, b) => b.added + b.removed - (a.added + a.removed))
+  const flagged = bySize.filter(file => isFlagged(file.path))
+  const files = [...flagged, ...bySize.filter(file => !isFlagged(file.path))]
     .slice(0, FILES_REVIEWED)
     .map(file => file.path)
-  const changed = judged?.blast.files.length ?? 0
+  const changed = blast?.files.length ?? 0
   const covers =
     files.length === 0
       ? 'every uncommitted change'
       : files.length === changed
         ? `the ${changed} changed ${changed === 1 ? 'file' : 'files'}`
-        : `the ${files.length} largest of ${changed} changed files`
+        : flagged.length === 0
+          ? `the ${files.length} largest of ${changed} changed files`
+          : `${files.length} of ${changed} changed files, flagged ones first, then the largest`
 
   return { files, label: focus === '' ? covers : `${covers}, focus: ${focus}` }
 }

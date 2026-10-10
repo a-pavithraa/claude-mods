@@ -2,6 +2,9 @@ import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import type { ChangedFile, Triage } from '../types'
+import { reviewScope } from './review'
+
 type World = {
   numstat: string
   grep?: Record<string, number>
@@ -10,6 +13,8 @@ type World = {
   hasNoHead?: boolean
   untracked?: string
   hashes?: string
+  codexExit?: number
+  draft?: string
 }
 
 const REVIEW = `The pager can report one page too many.
@@ -56,7 +61,7 @@ const PANE_PROPS = {
 } as const
 
 function world(on: On, w: World) {
-  const seen = { fetched: 0, committed: 0, toasts: [] as string[], codexArgs: [] as string[], filled: [] as string[], git: [] as string[], cwds: [] as (string | undefined)[], codexInput: '' }
+  const seen = { fetched: 0, committed: 0, toasts: [] as string[], codexArgs: [] as string[], filled: [] as string[], git: [] as string[], cwds: [] as (string | undefined)[], codexInput: '', modes: [] as string[] }
   const ok = (stdout: string, exitCode = 0) => ({
     value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   })
@@ -70,8 +75,10 @@ function world(on: On, w: World) {
     return { value: undefined }
   })
   on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('prompt.read', () => ({ value: { text: w.draft ?? '', cursor: 0 } }))
   on('prompt.fill', ($, e) => {
     seen.filled.push(e.text)
+    seen.modes.push(e.mode ?? 'replace')
 
     return { isFilled: true }
   })
@@ -107,6 +114,8 @@ function world(on: On, w: World) {
     seen.codexArgs = [...e.argv]
     seen.codexInput = e.input ?? ''
     yield { stream: 'stderr' as const, text: 'reading src/pager.ts\n' }
+    if (w.codexExit !== undefined) return { value: { code: w.codexExit, signal: null } }
+
     yield { stream: 'stdout' as const, text: REVIEW }
 
     return { value: { code: 0, signal: null } }
@@ -207,7 +216,7 @@ test('without a key it judges blast radius alone and never calls Jev', async ($,
   const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n' })
   await start($)
 
-  expect((await triage($)).text).toBe('PASS (risk 0)')
+  expect((await triage($)).text).toBe('NO REVIEW TRIGGER (risk 0)')
   expect(seen.fetched).toBe(0)
 
   const pane = await mountPane($, 'terminal')
@@ -546,4 +555,108 @@ test('Codex is told what the user asked for and what was built', async ($, on) =
   // #then
   expect(seen.codexInput).toContain('> make the pager count the last partial page')
   expect(seen.codexInput).toContain('Pages are counted from the item total.')
+})
+
+test('a one-line auth change is reviewed even when 15 larger files changed', () => {
+  // #given
+  const big = (at: number): ChangedFile => ({ path: `src/feature/part${at}.ts`, added: 100 + at, removed: 0, isNew: false })
+  const files = [...Array.from({ length: 15 }, (_, at) => big(at)), { path: 'src/auth/guard.ts', added: 1, removed: 1, isNew: false }]
+  const judged: Triage = {
+    fingerprint: 'f',
+    verdict: 'hold',
+    points: 5,
+    reasons: [],
+    blast: { files, lines: 0, areas: [], risky: [] },
+    jev: { status: 'off' },
+    isPatchCut: false,
+  }
+
+  // #when
+  const scope = reviewScope(judged, '')
+
+  // #then
+  expect([scope.files[0], scope.files.length, scope.label]).toEqual([
+    'src/auth/guard.ts',
+    15,
+    '15 of 16 changed files, flagged ones first, then the largest',
+  ])
+})
+
+test('a failed Codex run is reported as failed, not as a clean review', async ($, on) => {
+  // #given
+  world(on, { numstat: '12\t3\tsrc/pager.ts\n', key: 'k', codexExit: 1 })
+  await start($)
+  await triage($)
+
+  // #when
+  const ran = await triage($, 'codex')
+
+  // #then
+  expect(ran.text).toBe('Codex review failed; it listed no findings. See the Triage pane.')
+})
+
+test('a Codex review run before any triage still shows in the pane', async ($, on) => {
+  // #given
+  world(on, { numstat: '12\t3\tsrc/pager.ts\n', key: 'k' })
+  await start($)
+
+  // #when
+  await triage($, 'codex')
+  const pane = await mountPane($, 'desktop')
+
+  // #then
+  expect(await pane.find({ text: /Codex found 1 problem/ })).toBeDefined()
+})
+
+test('an edit by Claude marks a finished Codex review stale without a new triage', async ($, on) => {
+  // #given
+  world(on, { numstat: '12\t3\tsrc/pager.ts\n', key: 'k' })
+  await start($)
+  await triage($)
+  await triage($, 'codex')
+
+  // #when
+  await $.tool.call({ tool: 'Edit', file_path: '/work/src/pager.ts', old_string: 'a', new_string: 'b' })
+  const pane = await mountPane($, 'desktop')
+
+  // #then
+  expect(await pane.find({ text: /edited since this review/ })).toBeDefined()
+})
+
+test('a one-line change to auth code is flagged for reading even without Jev', async ($, on) => {
+  // #given
+  world(on, { numstat: '1\t1\tsrc/auth/guard.ts\n' })
+  await start($)
+
+  // #when
+  const ran = await triage($)
+
+  // #then
+  expect(ran.text).toBe('READ IT (risk 0): changes sensitive code: src/auth/guard.ts')
+})
+
+test('/guide adds to a draft in the prompt box instead of replacing it', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '', draft: 'also check the pager' })
+  await start($)
+  await write($, '/work/src/big.ts', 120)
+
+  // #when
+  await guide($)
+
+  // #then
+  expect(seen.modes).toEqual(['append'])
+})
+
+test('a verdict from local checks alone says so under the badge', async ($, on) => {
+  // #given
+  world(on, { numstat: '12\t3\tsrc/pager.ts\n' })
+  await start($)
+  await triage($)
+
+  // #when
+  const pane = await mountPane($, 'desktop')
+
+  // #then
+  expect(await pane.find({ text: /Local checks only: size, spread and file paths/ })).toBeDefined()
 })
