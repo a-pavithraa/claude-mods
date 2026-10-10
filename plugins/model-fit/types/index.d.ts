@@ -3,12 +3,12 @@ export type Tier = 'small' | 'mid' | 'large' | 'top'
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type Cost = { tokens: number; usd: number }
 
-export type Target = { model?: string; effort?: Effort; label: string; cost: Cost }
+export type Target = { model?: string; effort?: Effort; label: string; cost: Cost; isDelegate?: true }
 
 export type Advice = {
   turnId: string
   need: Need
-  kind: 'smaller' | 'lighter' | 'bigger' | 'harder' | 'stay'
+  kind: 'smaller' | 'delegate' | 'lighter' | 'bigger' | 'harder' | 'stay'
   on: string
   estimate: Cost
   target?: Target

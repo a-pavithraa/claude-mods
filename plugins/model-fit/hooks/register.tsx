@@ -4,16 +4,17 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 import type { Advice, Effort, Need, Target } from '../types'
 import {
   CACHE_LIFETIME_MS,
-  CLASSIFY_BRIEF,
   FRESH_CONTEXT,
   NEEDS,
   NEED_WORDS,
   advise,
+  classifyText,
   contextAlert,
   contextLevel,
   describeModel,
   dollars,
   emptyHistory,
+  isMislabelled,
   record,
   tokens,
   typicalTurn,
@@ -26,6 +27,8 @@ const context = atom({ plugin: 'model-fit', key: 'context' } as const, null)
 
 const HISTORY_KEY = 'history'
 const PROMPT_CHARS = 4000
+/** Starts the prompt the subagent button sends; model-fit does not judge it again. */
+const DELEGATE_LEAD = 'Hand this task to a subagent on Haiku'
 const EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 const asEffort = (value: unknown): Effort | undefined =>
@@ -60,6 +63,7 @@ type Session = {
   needs: Map<string, Need>
   steps: Map<string, number>
   applied: Map<string, Target>
+  prompts: Map<string, string>
   level: number
   isCold: boolean
   cooling: Timer | undefined
@@ -68,13 +72,27 @@ type Session = {
 const setCold = ($: EngineInterface, isCold: boolean) =>
   update($, context, alert => (alert === null || alert.isCold === isCold ? alert : { ...alert, isCold }))
 
+/** The text of the assistant's last reply, so a short go-ahead is judged by the plan it approves. */
+async function lastReply($: EngineInterface) {
+  const rows = await $.session.messages().catch(() => [])
+
+  for (let at = rows.length - 1; at >= 0; at -= 1) {
+    const row = rows[at]
+
+    if (row?.role === 'assistant' && row.text.trim() !== '') return row.text
+  }
+
+  return ''
+}
+
 async function judge($: EngineInterface, session: Session, turnId: string, text: string, isCold: boolean) {
   const label = await $.model
-    .classify(`${CLASSIFY_BRIEF}\n${text.slice(0, PROMPT_CHARS)}`, NEEDS, { model: 'haiku' })
+    .classify(classifyText(text.slice(0, PROMPT_CHARS), await lastReply($)), NEEDS, { model: 'haiku' })
     .catch(() => undefined)
   const need = asNeed(label)
+  const isRunning = session.prompts.has(turnId)
 
-  if (need === undefined || session.model === undefined) return
+  if (need === undefined || session.model === undefined || !isRunning) return
 
   session.needs.set(turnId, need)
   const usage = await $.session.usage()
@@ -105,7 +123,26 @@ function adviceLine(shown: Advice) {
   return `${head} · ${estimate} · ${shown.target.label} ≈ ${dollars(shown.target.cost.usd)}`
 }
 
-const switchLabel = (target: Target) => (target.model !== undefined ? `Use ${target.label} for this turn` : `Use ${target.label}`)
+function switchLabel(target: Target) {
+  if (target.isDelegate === true) return `Hand to a ${target.label}`
+
+  return target.model !== undefined ? `Use ${target.label} for this turn` : `Use ${target.label}`
+}
+
+const delegatePrompt = (task: string) =>
+  [
+    `${DELEGATE_LEAD} (Agent tool, model "haiku"). Write it a self-contained brief with every path and fact it needs`,
+    'from this conversation, then pass on its result in two lines. Do not do the task yourself.',
+    '',
+    'Task:',
+    task,
+  ].join('\n')
+
+/** Stops the running turn and sends the same task again as a hand-off to a Haiku subagent. */
+async function delegate($: EngineInterface, turnId: string, task: string) {
+  await $.turn.abort({ turnId })
+  await $.prompt.submit({ text: delegatePrompt(task), asUser: true })
+}
 
 export const register: Register = on => {
   const session: Session = {
@@ -115,6 +152,7 @@ export const register: Register = on => {
     needs: new Map(),
     steps: new Map(),
     applied: new Map(),
+    prompts: new Map(),
     level: 0,
     isCold: true,
     cooling: undefined,
@@ -141,6 +179,10 @@ export const register: Register = on => {
 
     if (text !== '' && !text.startsWith('/')) {
       await update($, advice, () => null)
+    }
+
+    if (text !== '' && !text.startsWith('/') && !text.startsWith(DELEGATE_LEAD)) {
+      session.prompts.set(e.turnId, text)
       $.clock.after(0, () => void judge($, session, e.turnId, text, isCold))
     }
 
@@ -179,17 +221,21 @@ export const register: Register = on => {
     session.needs.delete(e.turnId)
     session.steps.delete(e.turnId)
     session.applied.delete(e.turnId)
+    session.prompts.delete(e.turnId)
 
     if (e.usage === undefined || e.isAborted) return done
 
     const actual = usageCost(e.usage, e.usage.model)
 
-    if (need !== undefined) {
+    if (need !== undefined && !isMislabelled(session.history, need, steps)) {
       session.history = record(session.history, need, steps, e.usage.output_tokens)
       await $.store.set(HISTORY_KEY, session.history)
     }
 
-    await update($, advice, shown => (shown?.turnId === e.turnId ? { ...shown, actual } : shown))
+    // What a turn cost says something only when the user switched; otherwise the advice goes with its turn.
+    await update($, advice, shown =>
+      shown?.turnId !== e.turnId ? shown : shown.isApplied ? { ...shown, actual } : null,
+    )
 
     return done
   })
@@ -256,6 +302,15 @@ export const register: Register = on => {
                 key="switch"
                 label={switchLabel(target)}
                 onPress={async () => {
+                  const task = session.prompts.get(shown.turnId)
+
+                  if (target.isDelegate === true && task !== undefined) {
+                    await update($, advice, () => null)
+                    await delegate($, shown.turnId, task)
+
+                    return
+                  }
+
                   session.applied.set(shown.turnId, target)
                   await update($, advice, now => (now === null ? now : { ...now, isApplied: true }))
                 }}
