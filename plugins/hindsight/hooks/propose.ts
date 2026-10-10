@@ -20,6 +20,9 @@ export function proposePrompt(snag: Snag, facts: RepoFacts): string {
     'Pause the task. This is a question about the environment, not about the work.',
     `This session hit a snag that also came up in ${snag.sessions.length - 1} earlier session(s): ${describe(snag)}.`,
     `Repo facts: pre-commit hook ${facts.hasPreCommit ? 'yes' : 'no'}; CI workflow ${facts.hasCi ? 'yes' : 'no'}; ./CLAUDE.md ${facts.claudeMdLines} lines.`,
+    ...(snag.tried === undefined
+      ? []
+      : ['These fixes were saved or sent before, and the snag came back anyway. Do not propose them again:', ...snag.tried.map(text => `- ${text}`)]),
     '',
     'Propose ONE change to the coding agent\'s environment that stops this snag next time. Kinds:',
     '- pointer: one line for ./CLAUDE.md that tells the agent where to look ("Mod hook code: plugins/<mod>/hooks/register.tsx").',

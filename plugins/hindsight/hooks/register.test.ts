@@ -10,7 +10,7 @@ const USAGE = { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 90
 type World = { fix: string; claudeMd?: string; box?: string }
 
 function world(on: On, w: World) {
-  const seen = { session: 's1', forks: 0, written: [] as string[], filled: [] as string[], toasts: [] as string[] }
+  const seen = { session: 's1', forks: 0, prompts: [] as string[], written: [] as string[], filled: [] as string[], toasts: [] as string[] }
   mock.store(on)
   const clock = mock.clock(on)
 
@@ -20,8 +20,9 @@ function world(on: On, w: World) {
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
-  on('model.fork', () => {
+  on('model.fork', ($, e) => {
     seen.forks += 1
+    seen.prompts.push(e.prompt)
 
     return { value: { isAnswered: true, text: w.fix, usage: USAGE } }
   })
@@ -187,4 +188,52 @@ test('a fork that finds no fix shows nothing', async ($, on) => {
 
   expect(seen.forks).toBe(1)
   expect(await (await band($)).find({ text: /hindsight/ })).toBeUndefined()
+})
+
+test('a fix loop that comes back in a later session reopens, and the fork hears what was tried', async ($, on) => {
+  // #given a fix sent to the prompt box in session 2
+  const { seen, clock } = world(on, { fix: '{"fix": "check", "text": "Add a pre-commit hook that runs npm test."}' })
+  await start($)
+  await fixLoopTurn($, 't1')
+  seen.session = 's2'
+  await fixLoopTurn($, 't2')
+  await clock.settle()
+  await (await band($)).press({ key: 'act' })
+
+  // #when the same loop happens again in that session, then in session 3
+  await fixLoopTurn($, 't3')
+  await clock.settle()
+  expect(seen.forks).toBe(1)
+
+  seen.session = 's3'
+  await fixLoopTurn($, 't4')
+  await clock.settle()
+
+  // #then it is judged again with the earlier fix ruled out, and the row says it came back
+  expect(seen.forks).toBe(2)
+  expect(seen.prompts[1]).toContain('Do not propose them again:\n- Add a pre-commit hook that runs npm test.')
+  expect(await (await band($)).find({ text: /hindsight · back after a fix: `npm test fail` failed/ })).toBeDefined()
+})
+
+test('a skipped snag is proposed again once it comes back in two more sessions', async ($, on) => {
+  // #given a fix loop proposed in session 2 and skipped
+  const { seen, clock } = world(on, { fix: '{"fix": "check", "text": "Add a pre-commit hook that runs npm test."}' })
+  await start($)
+  await fixLoopTurn($, 't1')
+  seen.session = 's2'
+  await fixLoopTurn($, 't2')
+  await clock.settle()
+  await (await band($)).press({ key: 'skip' })
+
+  // #when it comes back in session 3, then in session 4
+  seen.session = 's3'
+  await fixLoopTurn($, 't3')
+  await clock.settle()
+  const afterOne = seen.forks
+  seen.session = 's4'
+  await fixLoopTurn($, 't4')
+  await clock.settle()
+
+  // #then only the second return asks for a new proposal
+  expect([afterOne, seen.forks]).toEqual([1, 2])
 })

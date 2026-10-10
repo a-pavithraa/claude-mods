@@ -99,7 +99,16 @@ async function record($: EngineInterface, signals: Signal[]): Promise<Snag[]> {
     same.lastAt = now
 
     if (!same.sessions.includes(sessionId)) same.sessions.push(sessionId)
-    if (same.status === 'watching' && same.sessions.length >= RECUR_SESSIONS) {
+
+    const isFixed = same.status === 'sent' || same.status === 'done'
+
+    if (isFixed && same.fixedIn !== sessionId) {
+      same.tried = [...(same.tried ?? []), ...(same.fix === undefined ? [] : [same.fix.text])]
+      same.fix = undefined
+      same.fixedIn = undefined
+      same.status = 'judging'
+      recurred.push(same)
+    } else if (same.status === 'watching' && same.sessions.length >= RECUR_SESSIONS) {
       same.status = 'judging'
       recurred.push(same)
     }
@@ -125,7 +134,8 @@ async function save($: EngineInterface, snag: Snag) {
 
   if (after !== before) await $.fs.write(path, after)
 
-  await setStatus($, snag.id, held => ({ ...held, status: 'done' }))
+  const fixedIn = await $.session.id()
+  await setStatus($, snag.id, held => ({ ...held, status: 'done', fixedIn }))
   $.ui.toast(after === before ? `hindsight: already in ${path}` : `hindsight: added to ${path}`)
 }
 
@@ -142,7 +152,15 @@ async function sendToPrompt($: EngineInterface, snag: Snag) {
 
   const filled = await $.prompt.fill({ text: taskText(snag, snag.fix.text), mode: 'replace' })
 
-  if (filled.isFilled) await setStatus($, snag.id, held => ({ ...held, status: 'done' }))
+  if (!filled.isFilled) return
+
+  const fixedIn = await $.session.id()
+  await setStatus($, snag.id, held => ({ ...held, status: 'sent', fixedIn }))
+}
+
+/** Not now: the snag starts counting sessions again, and is proposed afresh if it keeps coming back. */
+async function skip($: EngineInterface, snag: Snag) {
+  await setStatus($, snag.id, held => ({ ...held, status: 'watching', sessions: [], fix: undefined }))
 }
 
 async function mute($: EngineInterface, snag: Snag) {
@@ -312,7 +330,9 @@ export const register: Register = on => {
         {below.type === 'engine' ? null : below}
         <Box>
           <Text color="warning">⚑ </Text>
-          <Text wrap="wrap">{`hindsight · ${snag.sessions.length} sessions: ${describe(snag)}`}</Text>
+          <Text wrap="wrap">
+            {`hindsight · ${snag.tried === undefined ? `${snag.sessions.length} sessions` : 'back after a fix'}: ${describe(snag)}`}
+          </Text>
         </Box>
         <Text wrap="wrap">{`  ${isPointer ? `Add to ./CLAUDE.md: "${snag.fix.text}"` : snag.fix.text}`}</Text>
         <Box gap={1}>
@@ -327,7 +347,7 @@ export const register: Register = on => {
           <Button
             key="skip"
             label="Skip"
-            onPress={() => setStatus($, snag.id, held => ({ ...held, status: 'skipped' }))}
+            onPress={() => skip($, snag)}
           />
         </Box>
       </Box>
