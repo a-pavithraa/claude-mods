@@ -109,4 +109,4 @@ claude plugin test plugins/<mod>
 claude plugin validate .
 ```
 
-[HANDOFF.md](HANDOFF.md) holds the layout of a mod, the current state, open questions and API lessons; [docs/](docs) holds the hindsight plan and two reviews of the mods.
+[HANDOFF.md](HANDOFF.md) holds the layout of a mod, the current state, open questions and API lessons; [docs/](docs) holds the hindsight plan.
