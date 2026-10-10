@@ -8,7 +8,8 @@ type Usage = {
   cache_creation_input_tokens: number
 }
 
-export type Totals = { turns: number; steps: number; output: number }
+/** `misses`: turns given this label that ran far past it, so the label was wrong. */
+export type Totals = { turns: number; steps: number; output: number; misses: number }
 export type History = Record<Need, Totals>
 
 // List prices in USD per million tokens for the current models (Haiku 5.5, Sonnet 5.5, Opus 5.5,
@@ -31,22 +32,18 @@ export const CACHE_LIFETIME_MS = 60 * 60_000
 const LABEL: Record<Tier, string> = { small: 'Haiku', mid: 'Sonnet', large: 'Opus', top: 'Fable' }
 const ALIAS: Record<Tier, string> = { small: 'haiku', mid: 'sonnet', large: 'opus', top: 'fable' }
 
-const SEED: History = {
+const SEED: Record<Need, Omit<Totals, 'misses'>> = {
   trivial: { turns: 1, steps: 2, output: 800 },
   normal: { turns: 1, steps: 8, output: 5_000 },
   complex: { turns: 1, steps: 25, output: 20_000 },
 }
 
-export const FRESH_CONTEXT = 20_000
 const WORTH_SWITCHING = 0.75
-/** A turn this many times its label's typical steps was labelled wrong; it is not learned from. */
+/** A turn this many times its label's typical steps was labelled wrong: counted as a miss, not learned from. */
 const MISLABEL_FACTOR = 3
-/** What the session model writes to brief a subagent and to pass on its answer. */
-const BRIEF_OUTPUT = 1_500
 const REPLY_CHARS = 1_200
 const HEAVY_EFFORT: readonly Effort[] = ['high', 'xhigh', 'max']
 export const CONTEXT_LEVELS = [100_000, 200_000, 400_000, 700_000]
-const BIG_CONTEXT = CONTEXT_LEVELS[0] ?? 100_000
 
 export const NEEDS: readonly Need[] = ['trivial', 'normal', 'complex']
 
@@ -79,15 +76,18 @@ export const describeModel = (model: string, effort: Effort | undefined) => {
 }
 
 export const emptyHistory = (): History => ({
-  trivial: { turns: 0, steps: 0, output: 0 },
-  normal: { turns: 0, steps: 0, output: 0 },
-  complex: { turns: 0, steps: 0, output: 0 },
+  trivial: { turns: 0, steps: 0, output: 0, misses: 0 },
+  normal: { turns: 0, steps: 0, output: 0, misses: 0 },
+  complex: { turns: 0, steps: 0, output: 0, misses: 0 },
 })
 
+/** Learns a finished turn, or counts it as a miss when it ran far past its label. */
 export function record(history: History, need: Need, steps: number, output: number): History {
   const was = history[need]
 
-  return { ...history, [need]: { turns: was.turns + 1, steps: was.steps + steps, output: was.output + output } }
+  if (isMislabelled(history, need, steps)) return { ...history, [need]: { ...was, misses: was.misses + 1 } }
+
+  return { ...history, [need]: { ...was, turns: was.turns + 1, steps: was.steps + steps, output: was.output + output } }
 }
 
 export function typicalTurn(history: History, need: Need) {
@@ -102,45 +102,12 @@ export function typicalTurn(history: History, need: Need) {
   }
 }
 
-function turnCost(tier: Tier, context: number, steps: number, output: number, isCold: boolean): Cost {
-  const price = priceOf(tier, context)
-  const firstStep = context * (isCold ? price.input * CACHE_WRITE : price.cacheRead)
-  const laterSteps = (steps - 1) * context * price.cacheRead
-  const usd = (firstStep + laterSteps + output * price.output) / MILLION
-
-  return { tokens: steps * context + output, usd }
-}
-
 export const isMislabelled = (history: History, need: Need, steps: number) =>
   steps > typicalTurn(history, need).steps * MISLABEL_FACTOR
 
-/** The first request goes out before the advice shows, so it is always paid on the session model. */
-function firstStepUsd(tier: Tier, context: number, isCold: boolean) {
-  const price = priceOf(tier, context)
-
-  return (context * (isCold ? price.input * CACHE_WRITE : price.cacheRead)) / MILLION
-}
-
-function switchCost(tier: Tier, context: number, steps: number, output: number, isCold: boolean): Cost {
-  const rest = turnCost('small', context, Math.max(1, steps - 1), output, true)
-
-  return { tokens: context + rest.tokens, usd: firstStepUsd(tier, context, isCold) + rest.usd }
-}
-
-/** The session model reads the context to brief a subagent and again to pass on its answer; the subagent starts fresh. */
-function delegateCost(tier: Tier, context: number, steps: number, output: number, isCold: boolean): Cost {
-  const price = priceOf(tier, context)
-  const briefing = (2 * context * price.cacheRead + BRIEF_OUTPUT * price.output) / MILLION
-  const agent = turnCost('small', FRESH_CONTEXT, steps, output, true)
-
-  return {
-    tokens: 3 * context + BRIEF_OUTPUT + agent.tokens,
-    usd: firstStepUsd(tier, context, isCold) + briefing + agent.usd,
-  }
-}
-
-export function usageCost(usage: Usage, model: string): Cost {
-  const price = PRICE[tierOf(model) ?? 'large']
+/** `context` is the conversation's size, which sets Haiku's long-prompt price. */
+export function usageCost(usage: Usage, model: string, context = 0): Cost {
+  const price = priceOf(tierOf(model) ?? 'large', context)
   const input =
     (usage.input_tokens + usage.cache_creation_input_tokens * CACHE_WRITE) * price.input +
     usage.cache_read_input_tokens * price.cacheRead
@@ -150,66 +117,52 @@ export function usageCost(usage: Usage, model: string): Cost {
   return { tokens, usd: (input + usage.output_tokens * price.output) / MILLION }
 }
 
-type Situation = {
+/** Before the work: a complex ask on a model or effort that may give a thin answer. */
+export function warn(turnId: string, need: Need, model: string, effort: Effort | undefined): Advice | undefined {
+  if (need !== 'complex') return undefined
+
+  const on = describeModel(model, effort)
+
+  if (tierOf(model) === 'small') {
+    return { turnId, need, kind: 'bigger', on, target: { label: 'Opus', command: '/model opus' } }
+  }
+
+  if (effort === 'low') return { turnId, need, kind: 'harder', on, target: { label: 'high effort' } }
+
+  return undefined
+}
+
+type Finished = {
   turnId: string
   need: Need
   model: string
   effort: Effort | undefined
+  usage: Usage
   context: number
-  isCold: boolean
+  steps: number
   history: History
 }
 
-export function advise(now: Situation): Advice | undefined {
-  const tier = tierOf(now.model)
+/**
+ * After the work, for the next ask like it: a simple ask that ran on a bigger model than it needed, priced from
+ * what the turn really used. A turn that ran far past its label was not simple, so it gets no advice.
+ */
+export function advise(turn: Finished): Advice | undefined {
+  const tier = tierOf(turn.model)
 
-  if (tier === undefined || now.need === 'normal') return undefined
+  if (tier === undefined || tier === 'small' || turn.need !== 'trivial') return undefined
+  if (isMislabelled(turn.history, turn.need, turn.steps)) return undefined
 
-  const typical = typicalTurn(now.history, now.need)
-  const estimate = turnCost(tier, now.context, typical.steps, typical.output, now.isCold)
-  const base = { turnId: now.turnId, need: now.need, on: describeModel(now.model, now.effort), estimate, isApplied: false }
+  const actual = usageCost(turn.usage, turn.model, turn.context)
+  const onSmall = usageCost(turn.usage, ALIAS.small, turn.context)
+  const base = { turnId: turn.turnId, need: turn.need, on: describeModel(turn.model, turn.effort), actual }
 
-  if (now.need === 'trivial' && tier !== 'small') {
-    const onSmall = switchCost(tier, now.context, typical.steps, typical.output, now.isCold)
-    const onAgent = delegateCost(tier, now.context, typical.steps, typical.output, now.isCold)
-
-    if (onAgent.usd < onSmall.usd && onAgent.usd <= estimate.usd * WORTH_SWITCHING) {
-      return {
-        ...base,
-        kind: 'delegate',
-        target: { model: ALIAS.small, label: 'Haiku subagent', cost: onAgent, isDelegate: true },
-      }
-    }
-
-    if (onSmall.usd <= estimate.usd * WORTH_SWITCHING) {
-      return { ...base, kind: 'smaller', target: { model: ALIAS.small, label: 'Haiku', cost: onSmall } }
-    }
-
-    if (now.effort !== undefined && HEAVY_EFFORT.includes(now.effort)) {
-      const lighter = turnCost(tier, now.context, typical.steps, Math.round(typical.output / 2), false)
-
-      return { ...base, kind: 'lighter', target: { effort: 'low', label: 'low effort', cost: lighter } }
-    }
-
-    const note = now.isCold
-      ? `Haiku would do, but the first request already paid to cache this conversation on ${LABEL[tier]}, so switching saves little. Start small asks on Haiku.`
-      : now.context >= BIG_CONTEXT
-        ? `Haiku would do, but with ${tokens(now.context)} of context switching costs more than it saves. Small asks are cheaper in a fresh session.`
-        : `Haiku would do, but this session's cache makes staying nearly as cheap (Haiku ≈ ${dollars(onSmall.usd)}). Next time, start small asks on Haiku.`
-
-    return { ...base, kind: 'stay', note }
+  if (onSmall.usd <= actual.usd * WORTH_SWITCHING) {
+    return { ...base, kind: 'smaller', target: { label: 'Haiku', command: `/model ${ALIAS.small}`, usd: onSmall.usd } }
   }
 
-  if (now.need === 'complex' && tier === 'small') {
-    const onLarge = turnCost('large', now.context, typical.steps, typical.output, true)
-
-    return { ...base, kind: 'bigger', target: { model: ALIAS.large, label: 'Opus', cost: onLarge } }
-  }
-
-  if (now.need === 'complex' && now.effort === 'low') {
-    const harder = turnCost(tier, now.context, typical.steps, typical.output * 2, false)
-
-    return { ...base, kind: 'harder', target: { effort: 'high', label: 'high effort', cost: harder } }
+  if (turn.effort !== undefined && HEAVY_EFFORT.includes(turn.effort)) {
+    return { ...base, kind: 'lighter', target: { label: 'low effort' } }
   }
 
   return undefined
@@ -236,6 +189,7 @@ export function tokens(count: number) {
   return String(count)
 }
 
+/** At list prices, an estimate: /cost and the bill are the authority. */
 export const dollars = (usd: number) => (usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`)
 
 export const NEED_WORDS: Record<Need, string> = {

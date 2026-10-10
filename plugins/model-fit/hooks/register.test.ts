@@ -2,18 +2,15 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-type World = { model: string; effort?: string; label: string; context?: number; otherBand?: string; reply?: string }
+type World = { model: string; effort?: string; label: string; context?: number; otherBand?: string; reply?: string; draft?: string }
 
 const USAGE = { input_tokens: 400, output_tokens: 900, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 2_000 }
 
 function world(on: On, w: World) {
   const seen = {
-    models: [] as string[],
-    efforts: [] as (string | number | undefined)[],
     toasts: [] as string[],
     classified: [] as string[],
-    aborted: [] as string[],
-    submitted: [] as string[],
+    filled: [] as string[],
   }
   mock.store(on)
   const clock = mock.clock(on)
@@ -28,15 +25,12 @@ function world(on: On, w: World) {
   on('session.messages', () => ({
     value: w.reply === undefined ? [] : [{ role: 'assistant', text: w.reply, toolUses: [] }],
   }))
-  on('turn.abort', ($, e) => {
-    seen.aborted.push(e.turnId)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('prompt.read', () => ({ value: { text: w.draft ?? '', cursor: 0 } }))
+  on('prompt.fill', ($, e) => {
+    seen.filled.push(e.text)
 
-    return { value: undefined }
-  })
-  on('prompt.submit', ($, e) => {
-    seen.submitted.push(e.text)
-
-    return { text: e.text }
+    return { isFilled: true }
   })
   on('session.usage', () => ({
     value: { startedAt: 0, context: { tokens: w.context, window: 1_000_000 }, rateLimits: [] },
@@ -54,9 +48,6 @@ function world(on: On, w: World) {
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
   on('turn.step', async function* ($, e) {
-    seen.models.push(e.model)
-    seen.efforts.push(e.effort)
-
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
   })
 
@@ -79,11 +70,6 @@ async function ask($: Engine, text: string, turnId: string) {
   await $.turn.start({ text, turnId })
 }
 
-async function warmUp($: Engine) {
-  await ask($, '/fit', 't0')
-  await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't0', reason: 'answer' })
-}
-
 const band = ($: Engine) =>
   $.ui.mount({
     plugin: 'model-fit',
@@ -99,96 +85,151 @@ const band = ($: Engine) =>
     },
   })
 
-test('a simple ask on Opus/high offers Haiku, and the switch reaches the next request', async ($, on) => {
+type Turn = { id: string; text: string; model: string; steps: number; effort?: 'high' | 'low' | 'medium'; isLabelLate?: boolean }
+
+/** A typed ask, run to its end; with `isLabelLate` the label comes back only after the turn ended. */
+async function runTurn($: Engine, clock: { settle: () => Promise<unknown> }, turn: Turn) {
+  await ask($, turn.text, turn.id)
+
+  if (turn.isLabelLate !== true) await clock.settle()
+
+  for (let index = 0; index < turn.steps; index += 1) await step($, turn.model, index, turn.effort, turn.id)
+
+  await $.turn.complete({
+    answer: 'done',
+    durationMs: 1000,
+    isAborted: false,
+    turnId: turn.id,
+    reason: 'answer',
+    usage: { ...USAGE, model: turn.model },
+  })
+  await clock.settle()
+}
+
+const fitCommand = ($: Engine) =>
+  $.command.run({ command: 'fit', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+
+const RENAME: Turn = { id: 't1', text: 'rename foo to bar in util.ts', model: 'claude-opus-5-5', steps: 2, effort: 'high' }
+const DESIGN = 'design a plugin system for the exporter and migrate the three formats to it'
+
+test('a simple ask on Opus says nothing while it runs', async ($, on) => {
+  // #given
+  const { clock } = world(on, { model: 'opus', effort: 'high', label: 'trivial', context: 12_000 })
+  await start($)
+
+  // #when
+  await ask($, RENAME.text, 't1')
+  await clock.settle()
+
+  // #then
+  expect(await (await band($)).find({ text: /simple/ })).toBeUndefined()
+})
+
+test('after a simple ask on Opus it prices the turn on Haiku and offers /model haiku for next time', async ($, on) => {
+  // #given
   const { seen, clock } = world(on, { model: 'opus', effort: 'high', label: 'trivial', context: 12_000 })
   await start($)
-  await warmUp($)
-  await ask($, 'rename foo to bar in util.ts', 't1')
-  await step($, 'claude-opus-5-5', 0, 'high')
-  await clock.settle()
+  await runTurn($, clock, RENAME)
 
+  // #when
   const shown = await band($)
-  expect(await shown.find({ text: /Looks simple · on Opus\/high · est\. ~/ })).toBeDefined()
-  expect(await shown.find({ text: /Haiku ≈ <?\$/ })).toBeDefined()
+  await shown.press({ key: 'use' })
 
-  await shown.press({ key: 'switch' })
-  await step($, 'claude-opus-5-5', 1, 'high')
-
-  expect(seen.models).toEqual(['claude-opus-5-5', 'haiku'])
-  expect(await shown.find({ text: /switched/ })).toBeDefined()
+  // #then
+  expect([
+    (await shown.find({ text: /That ask looked simple and ran on Opus\/high: ≈ \$0\.04\. On Haiku ≈ <\$0\.01, if it took the same steps\./ })) !== undefined,
+    (await shown.find({ text: /List-price estimates; \/cost has the real figure/ })) !== undefined,
+    seen.filled,
+  ]).toEqual([true, true, ['/model haiku']])
 })
 
-test('a complex ask on Haiku offers Opus', async ($, on) => {
+test('a label that comes back after the turn ended still gives the advice', async ($, on) => {
+  // #given
+  const { clock } = world(on, { model: 'opus', effort: 'medium', label: 'trivial', context: 12_000 })
+  await start($)
+
+  // #when
+  await runTurn($, clock, { ...RENAME, effort: 'medium', isLabelLate: true })
+
+  // #then
+  expect(await (await band($)).find({ text: /That ask looked simple and ran on Opus\/medium/ })).toBeDefined()
+})
+
+test('the command is not put over a draft in the prompt box', async ($, on) => {
+  // #given
+  const { seen, clock } = world(on, { model: 'opus', effort: 'high', label: 'trivial', context: 12_000, draft: 'next: fix the pager' })
+  await start($)
+  await runTurn($, clock, RENAME)
+
+  // #when
+  await (await band($)).press({ key: 'use' })
+
+  // #then
+  expect([seen.filled, seen.toasts]).toEqual([[], ['model-fit: clear the prompt box first; /model haiku goes there']])
+})
+
+test('a complex ask on Haiku warns while it runs, with no switch mid-turn', async ($, on) => {
+  // #given
   const { clock } = world(on, { model: 'haiku', label: 'complex' })
   await start($)
-  await ask($, 'design a plugin system for the exporter and migrate the three formats to it', 't1')
-  await clock.settle()
 
+  // #when
+  await ask($, DESIGN, 't1')
+  await clock.settle()
   const shown = await band($)
-  expect(await shown.find({ text: /Looks complex · on Haiku/ })).toBeDefined()
-  expect(await shown.find({ key: 'switch', text: 'Use Opus for this turn' })).toBeDefined()
+
+  // #then
+  expect([
+    (await shown.find({ text: /This ask looks complex and runs on Haiku\./ })) !== undefined,
+    (await shown.find({ key: 'use', text: 'Put /model opus in prompt' })) !== undefined,
+  ]).toEqual([true, true])
 })
 
-test('the advice and another plugin\'s band are both shown', async ($, on) => {
+test("the advice and another plugin's band are both shown", async ($, on) => {
+  // #given
   const { clock } = world(on, { model: 'haiku', label: 'complex', otherBand: '2 files to read' })
   await start($)
-  await ask($, 'design a plugin system for the exporter and migrate the three formats to it', 't1')
+
+  // #when
+  await ask($, DESIGN, 't1')
   await clock.settle()
-
   const shown = await band($)
-  expect(await shown.find({ text: /Looks complex · on Haiku/ })).toBeDefined()
-  expect(await shown.find({ text: '2 files to read' })).toBeDefined()
-})
 
-test('deep in a large context it advises staying put rather than switching', async ($, on) => {
-  const { clock } = world(on, { model: 'opus', effort: 'medium', label: 'trivial', context: 180_000 })
-  await start($)
-  await warmUp($)
-  await ask($, 'what does parseMap return?', 't1')
-  await clock.settle()
-
-  const shown = await band($)
-  expect(await shown.find({ text: /switching costs more than it saves/ })).toBeDefined()
-  expect(await shown.find({ key: 'switch' })).toBeUndefined()
-})
-
-test('a simple ask mid-session offers Haiku even with a warm cache', async ($, on) => {
-  const { clock } = world(on, { model: 'opus', effort: 'medium', label: 'trivial', context: 70_000 })
-  await start($)
-  await warmUp($)
-  await ask($, 'what does parseMap return?', 't1')
-  await clock.settle()
-
-  const shown = await band($)
-  expect(await shown.find({ text: /Looks simple · on Opus\/medium/ })).toBeDefined()
-  expect(await shown.find({ key: 'switch', text: 'Use Haiku for this turn' })).toBeDefined()
+  // #then
+  expect([
+    (await shown.find({ text: /looks complex/ })) !== undefined,
+    (await shown.find({ text: '2 files to read' })) !== undefined,
+  ]).toEqual([true, true])
 })
 
 test('a routine ask stays quiet, and the finished turn is learned for next time', async ($, on) => {
+  // #given
   const { clock } = world(on, { model: 'opus', label: 'normal' })
   await start($)
-  await ask($, 'add a test for groupByTask', 't1')
-  await clock.settle()
-  await step($, 'claude-opus-5-5', 0)
-  await step($, 'claude-opus-5-5', 1)
-  await $.turn.complete({
-    answer: 'done',
-    durationMs: 9000,
-    isAborted: false,
-    turnId: 't1',
-    reason: 'answer',
-    usage: { ...USAGE, model: 'claude-opus-5-5' },
-  })
 
-  expect(await (await band($)).find({ text: /Looks/ })).toBeUndefined()
+  // #when
+  await runTurn($, clock, { id: 't1', text: 'add a test for groupByTask', model: 'claude-opus-5-5', steps: 2 })
 
-  const fit = await $.command.run({
-    command: 'fit',
-    args: '',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: true, columns: 120 },
-  })
-  expect(fit.text).toContain('normal: ~5 steps, ~3k output tok (from 1 turns)')
+  // #then
+  expect([await (await band($)).find({ text: /looks|looked/ }), (await fitCommand($)).text]).toEqual([
+    undefined,
+    expect.stringContaining('normal: ~5 steps, ~3k output tok (from 1 turns)'),
+  ])
+})
+
+test('a simple-labelled turn that ran far longer gets no advice and is counted as a wrong label', async ($, on) => {
+  // #given
+  const { clock } = world(on, { model: 'opus', effort: 'medium', label: 'trivial', context: 70_000 })
+  await start($)
+
+  // #when
+  await runTurn($, clock, { ...RENAME, effort: 'medium', steps: 40 })
+
+  // #then
+  expect([await (await band($)).find({ text: /simple/ }), (await fitCommand($)).text]).toEqual([
+    undefined,
+    expect.stringContaining('trivial: ~2 steps, ~800 output tok (a guess so far; 1 more ran over 3x that, so their label was wrong)'),
+  ])
 })
 
 const measure = ($: Engine, count: number) =>
@@ -204,7 +245,7 @@ test('a context past 100k is explained in plain words, in the band alone', async
   await measure($, 130_000)
 
   const shown = await band($)
-  expect(await shown.find({ text: /Long conversation \(120k tokens\): each step Claude takes rereads it, ≈ \$0\.02 a step/ })).toBeDefined()
+  expect(await shown.find({ text: /Long conversation \(120k tokens\): each step Claude takes rereads it, ≈ \$0\.02 a step at list prices/ })).toBeDefined()
   expect(await shown.find({ text: /When you move on to a new task, \/clear first/ })).toBeDefined()
   expect(await shown.find({ text: /re-cached/ })).toBeUndefined()
   expect(seen.toasts).toEqual([])
@@ -238,51 +279,6 @@ test('after an hour of quiet the alert adds what the next action costs, and a ne
   expect(await (await band($)).find({ text: /re-cached/ })).toBeUndefined()
 })
 
-test('the first ask of a session already cached the conversation on Opus, so it does not offer Haiku', async ($, on) => {
-  const { clock } = world(on, { model: 'opus', effort: 'medium', label: 'trivial', context: 70_000 })
-  await start($)
-  await ask($, 'what does parseMap return?', 't1')
-  await clock.settle()
-
-  const shown = await band($)
-  expect(await shown.find({ text: /the first request already paid to cache this conversation on Opus/ })).toBeDefined()
-  expect(await shown.find({ key: 'switch' })).toBeUndefined()
-})
-
-async function trivialTurn($: Engine, clock: { settle: () => Promise<unknown> }, turnId: string, steps: number) {
-  await ask($, 'bump the version', turnId)
-  await clock.settle()
-
-  for (let index = 0; index < steps; index += 1) await step($, 'claude-opus-5-5', index, 'medium', turnId)
-
-  await $.turn.complete({
-    answer: 'done',
-    durationMs: 1000,
-    isAborted: false,
-    turnId,
-    reason: 'answer',
-    usage: { ...USAGE, model: 'claude-opus-5-5' },
-  })
-}
-
-test('a many-step simple ask deep in a session offers a Haiku subagent, and the press hands it off', async ($, on) => {
-  const { seen, clock } = world(on, { model: 'opus', effort: 'medium', label: 'trivial', context: 300_000 })
-  await start($)
-
-  for (const turnId of ['t0', 't1', 't2']) await trivialTurn($, clock, turnId, 6)
-
-  await ask($, 'bump the version in all four plugins', 't3')
-  await clock.settle()
-
-  const shown = await band($)
-  expect(await shown.find({ key: 'switch', text: 'Hand to a Haiku subagent' })).toBeDefined()
-
-  await shown.press({ key: 'switch' })
-
-  expect(seen.aborted).toEqual(['t3'])
-  expect(seen.submitted.at(-1)).toMatch(/^Hand this task to a subagent on Haiku[\s\S]*Task:\nbump the version in all four plugins$/)
-})
-
 test('a go-ahead is judged together with the reply it approves', async ($, on) => {
   const { seen, clock } = world(on, {
     model: 'opus',
@@ -297,26 +293,10 @@ test('a go-ahead is judged together with the reply it approves', async ($, on) =
   expect(seen.classified[0]).toMatch(/Request:\nyes please$/)
 })
 
-test('a simple-labelled turn that ran far longer is not learned, and its advice goes when it ends', async ($, on) => {
-  const { clock } = world(on, { model: 'opus', effort: 'medium', label: 'trivial', context: 70_000 })
-  await start($)
-  await trivialTurn($, clock, 't1', 40)
-
-  expect(await (await band($)).find({ text: /Looks simple/ })).toBeUndefined()
-
-  const fit = await $.command.run({
-    command: 'fit',
-    args: '',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: true, columns: 120 },
-  })
-  expect(fit.text).toContain('trivial: ~2 steps, ~800 output tok (a guess so far)')
-})
-
 test('a turn the person did not start keeps the advice and is not judged', async ($, on) => {
   const { seen, clock } = world(on, { model: 'haiku', label: 'complex' })
   await start($)
-  await ask($, 'design a plugin system for the exporter and migrate the three formats to it', 't1')
+  await ask($, DESIGN, 't1')
   await clock.settle()
 
   await $.prompt.submit({ text: '<task-notification>agent finished</task-notification>', origin: { kind: 'task-notification' }, wait: false })
@@ -325,18 +305,18 @@ test('a turn the person did not start keeps the advice and is not judged', async
   await clock.settle()
 
   expect(seen.classified).toHaveLength(1)
-  expect(await (await band($)).find({ text: /Looks complex · on Haiku/ })).toBeDefined()
+  expect(await (await band($)).find({ text: /looks complex and runs on Haiku/ })).toBeDefined()
 })
 
-test('a reload does not draw the last turn\'s advice again', async ($, on) => {
+test("a reload does not draw the last turn's advice again", async ($, on) => {
   const { clock } = world(on, { model: 'haiku', label: 'complex' })
   await start($)
-  await ask($, 'design a plugin system for the exporter and migrate the three formats to it', 't1')
+  await ask($, DESIGN, 't1')
   await clock.settle()
 
-  expect(await (await band($)).find({ text: /Looks complex/ })).toBeDefined()
+  expect(await (await band($)).find({ text: /looks complex/ })).toBeDefined()
 
   await start($)
 
-  expect(await (await band($)).find({ text: /Looks complex/ })).toBeUndefined()
+  expect(await (await band($)).find({ text: /looks complex/ })).toBeUndefined()
 })

@@ -1,6 +1,6 @@
 {
   "name": "model-fit",
-  "version": "0.3.2",
-  "description": "Says when the model or effort is too big or too small for the task at hand, what the turn will roughly cost, and when the context has grown expensive.",
+  "version": "0.4.0",
+  "description": "After a simple ask on a big model, says what it cost and what Haiku would have; warns when a complex ask runs on Haiku; and says when the context has grown expensive.",
   "types": "./types/index.d.ts"
 }

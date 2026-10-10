@@ -1,12 +1,10 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, Register, Timer, TurnCompleteInput } from 'claude-code'
 
-import type { Advice, Effort, Need, Target } from '../types'
+import type { Advice, Effort, Need } from '../types'
 import {
   CACHE_LIFETIME_MS,
-  FRESH_CONTEXT,
   NEEDS,
-  NEED_WORDS,
   advise,
   classifyText,
   contextAlert,
@@ -14,11 +12,10 @@ import {
   describeModel,
   dollars,
   emptyHistory,
-  isMislabelled,
   record,
   tokens,
   typicalTurn,
-  usageCost,
+  warn,
 } from './fit'
 import type { History } from './fit'
 
@@ -45,10 +42,10 @@ function asHistory(value: unknown): History {
     const kept = (value as Record<string, unknown>)[need]
 
     if (typeof kept === 'object' && kept !== null) {
-      const { turns, steps, output } = kept as Record<string, unknown>
+      const { turns, steps, output, misses } = kept as Record<string, unknown>
 
       if (typeof turns === 'number' && typeof steps === 'number' && typeof output === 'number') {
-        history[need] = { turns, steps, output }
+        history[need] = { turns, steps, output, misses: typeof misses === 'number' ? misses : 0 }
       }
     }
   }
@@ -56,14 +53,18 @@ function asHistory(value: unknown): History {
   return history
 }
 
+type Usage = NonNullable<TurnCompleteInput['usage']>
+type Ended = { usage: Usage; context: number; steps: number; effort: Effort | undefined }
+
 type Session = {
   model: string | undefined
   effort: Effort | undefined
   history: History
   needs: Map<string, Need>
   steps: Map<string, number>
-  applied: Map<string, Target>
-  prompts: Map<string, string>
+  running: Set<string>
+  /** Turns that ended before their label came back: concluded when it does. */
+  ended: Map<string, Ended>
   typed: string | undefined
   level: number
   isCold: boolean
@@ -86,63 +87,60 @@ async function lastReply($: EngineInterface) {
   return ''
 }
 
-async function judge($: EngineInterface, session: Session, turnId: string, text: string, isCold: boolean) {
-  const label = await $.model
-    .classify(classifyText(text.slice(0, PROMPT_CHARS), await lastReply($)), NEEDS, { model: 'haiku' })
-    .catch(() => undefined)
-  const need = asNeed(label)
-  const isRunning = session.prompts.has(turnId)
-
-  if (need === undefined || session.model === undefined || !isRunning) return
-
-  session.needs.set(turnId, need)
-  const usage = await $.session.usage()
-  const found = advise({
-    turnId,
-    need,
-    model: session.model,
-    effort: session.effort,
-    context: usage.context.tokens ?? FRESH_CONTEXT,
-    isCold,
-    history: session.history,
-  })
+/** Learns the finished turn and, when it ran on more than it needed, leaves advice for the next ask like it. */
+async function conclude($: EngineInterface, session: Session, turnId: string, need: Need, ended: Ended) {
+  const found = advise({ turnId, need, model: ended.usage.model, ...ended, history: session.history })
+  session.history = record(session.history, need, ended.steps, ended.usage.output_tokens)
+  await $.store.set(HISTORY_KEY, session.history)
 
   if (found !== undefined) await update($, advice, () => found)
 }
 
-function adviceLine(shown: Advice) {
-  const head = `${NEED_WORDS[shown.need]} · on ${shown.on}`
+async function judge($: EngineInterface, session: Session, turnId: string, text: string) {
+  const label = await $.model
+    .classify(classifyText(text.slice(0, PROMPT_CHARS), await lastReply($)), NEEDS, { model: 'haiku' })
+    .catch(() => undefined)
+  const need = asNeed(label)
+  const ended = session.ended.get(turnId)
+  session.ended.delete(turnId)
 
-  if (shown.actual !== undefined) {
-    return `${head} · that turn: ${tokens(shown.actual.tokens)} tok ≈ ${dollars(shown.actual.usd)} (est. ${dollars(shown.estimate.usd)})`
+  if (need === undefined) return
+  if (ended !== undefined) return conclude($, session, turnId, need, ended)
+  if (!session.running.has(turnId) || session.model === undefined) return
+
+  session.needs.set(turnId, need)
+  const warning = warn(turnId, need, session.model, session.effort)
+
+  if (warning !== undefined) await update($, advice, () => warning)
+}
+
+const WORDS: Record<Advice['kind'], (shown: Advice) => [string, string]> = {
+  smaller: shown => [
+    `That ask looked simple and ran on ${shown.on}: ≈ ${dollars(shown.actual?.usd ?? 0)}. On ${shown.target.label} ≈ ${dollars(shown.target.usd ?? 0)}, if it took the same steps.`,
+    `For asks like it, start on ${shown.target.label}. List-price estimates; /cost has the real figure.`,
+  ],
+  lighter: shown => [
+    `That ask looked simple and ran on ${shown.on}: ≈ ${dollars(shown.actual?.usd ?? 0)} at list prices.`,
+    'For asks like it, lower the effort in /model.',
+  ],
+  bigger: shown => [
+    `This ask looks complex and runs on ${shown.on}.`,
+    `If the answer looks thin, run it again on ${shown.target.label}.`,
+  ],
+  harder: shown => [
+    `This ask looks complex and runs on ${shown.on}.`,
+    'If the answer looks thin, raise the effort in /model and run it again.',
+  ],
+}
+
+async function putCommand($: EngineInterface, command: string) {
+  if ((await $.prompt.read()).text.trim() !== '') {
+    $.ui.toast(`model-fit: clear the prompt box first; ${command} goes there`)
+
+    return
   }
 
-  const estimate = `est. ~${tokens(shown.estimate.tokens)} tok ≈ ${dollars(shown.estimate.usd)}`
-
-  if (shown.target === undefined) return `${head} · ${estimate}`
-
-  return `${head} · ${estimate} · ${shown.target.label} ≈ ${dollars(shown.target.cost.usd)}`
-}
-
-function switchLabel(target: Target) {
-  if (target.isDelegate === true) return `Hand to a ${target.label}`
-
-  return target.model !== undefined ? `Use ${target.label} for this turn` : `Use ${target.label}`
-}
-
-const delegatePrompt = (task: string) =>
-  [
-    `Hand this task to a subagent on Haiku (Agent tool, model "haiku"). Write it a self-contained brief with every path and fact it needs`,
-    'from this conversation, then pass on its result in two lines. Do not do the task yourself.',
-    '',
-    'Task:',
-    task,
-  ].join('\n')
-
-/** Stops the running turn and sends the same task again as a hand-off to a Haiku subagent. */
-async function delegate($: EngineInterface, turnId: string, task: string) {
-  await $.turn.abort({ turnId })
-  await $.prompt.submit({ text: delegatePrompt(task), asUser: true })
+  await $.prompt.fill({ text: command, mode: 'replace' })
 }
 
 export const register: Register = on => {
@@ -152,8 +150,8 @@ export const register: Register = on => {
     history: emptyHistory(),
     needs: new Map(),
     steps: new Map(),
-    applied: new Map(),
-    prompts: new Map(),
+    running: new Set(),
+    ended: new Map(),
     typed: undefined,
     level: 0,
     isCold: true,
@@ -165,7 +163,7 @@ export const register: Register = on => {
     session.model = typeof settings.model === 'string' ? settings.model : undefined
     session.effort = asEffort(settings.effortLevel)
     session.history = asHistory(await $.store.get(HISTORY_KEY))
-    // Advice belongs to a running turn; a reload or resume must not draw the last one again.
+    // Advice belongs to the turn just run; a reload or resume must not draw the last one again.
     await update($, advice, () => null)
     await $.command.register({ name: 'fit', description: 'Model fit: what tasks cost so far; "/fit reset" forgets it' })
 
@@ -183,7 +181,6 @@ export const register: Register = on => {
 
   // Only a turn the person started is judged: a task notification, a continuation or a plugin's prompt keeps the advice.
   on('turn.start', async ($, e, next) => {
-    const isCold = session.isCold
     session.isCold = false
     session.cooling?.cancel()
     session.cooling = undefined
@@ -194,28 +191,21 @@ export const register: Register = on => {
 
     if (text !== undefined) {
       await update($, advice, () => null)
-      session.prompts.set(e.turnId, text)
-      $.clock.after(0, () => void judge($, session, e.turnId, text, isCold))
+      session.running.add(e.turnId)
+      $.clock.after(0, () => void judge($, session, e.turnId, text))
     }
 
     return started
   })
 
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId !== undefined) return yield* next(e)
+    if (e.agentId === undefined) {
+      session.model = e.model
+      session.effort = asEffort(e.effort) ?? session.effort
+      session.steps.set(e.turnId, (session.steps.get(e.turnId) ?? 0) + 1)
+    }
 
-    session.model = e.model
-    session.effort = asEffort(e.effort) ?? session.effort
-    session.steps.set(e.turnId, (session.steps.get(e.turnId) ?? 0) + 1)
-    const target = session.applied.get(e.turnId)
-
-    if (target === undefined) return yield* next(e)
-
-    return yield* next({
-      ...e,
-      ...(target.model === undefined ? {} : { model: target.model }),
-      ...(target.effort === undefined ? {} : { effort: target.effort }),
-    })
+    return yield* next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -228,26 +218,19 @@ export const register: Register = on => {
       session.isCold = true
       void setCold($, true)
     })
+    const wasTyped = session.running.delete(e.turnId)
     const need = session.needs.get(e.turnId)
     const steps = session.steps.get(e.turnId) ?? 0
     session.needs.delete(e.turnId)
     session.steps.delete(e.turnId)
-    session.applied.delete(e.turnId)
-    session.prompts.delete(e.turnId)
 
-    if (e.usage === undefined || e.isAborted) return done
+    if (!wasTyped || e.usage === undefined || e.isAborted) return done
 
-    const actual = usageCost(e.usage, e.usage.model)
+    const usage = await $.session.usage()
+    const ended: Ended = { usage: e.usage, context: usage.context.tokens ?? 0, steps, effort: session.effort }
 
-    if (need !== undefined && !isMislabelled(session.history, need, steps)) {
-      session.history = record(session.history, need, steps, e.usage.output_tokens)
-      await $.store.set(HISTORY_KEY, session.history)
-    }
-
-    // What a turn cost says something only when the user switched; otherwise the advice goes with its turn.
-    await update($, advice, shown =>
-      shown?.turnId !== e.turnId ? shown : shown.isApplied ? { ...shown, actual } : null,
-    )
+    if (need === undefined) session.ended.set(e.turnId, ended)
+    else await conclude($, session, e.turnId, need, ended)
 
     return done
   })
@@ -282,9 +265,11 @@ export const register: Register = on => {
     const current = session.model === undefined ? 'unknown' : describeModel(session.model, session.effort)
     const rows = NEEDS.map(need => {
       const typical = typicalTurn(session.history, need)
-      const seen = session.history[need].turns
+      const { turns, misses } = session.history[need]
+      const learned = turns === 0 ? 'a guess so far' : `from ${turns} turns`
+      const missed = misses === 0 ? '' : `; ${misses} more ran over 3x that, so their label was wrong`
 
-      return `${need}: ~${typical.steps} steps, ~${tokens(typical.output)} output tok (${seen === 0 ? 'a guess so far' : `from ${seen} turns`})`
+      return `${need}: ~${typical.steps} steps, ~${tokens(typical.output)} output tok (${learned}${missed})`
     })
 
     return { text: [`On ${current}.`, ...rows].join('\n') }
@@ -299,43 +284,28 @@ export const register: Register = on => {
     if (e.props.hasSurvey || (shown === null && heavy === null)) return below
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const target = shown?.target
-    const canSwitch = shown !== null && target !== undefined && shown.actual === undefined && !shown.isApplied
+    const isWarning = shown?.kind === 'bigger' || shown?.kind === 'harder'
+    const command = shown?.target.command
 
     return (
       <Box flexDirection="column">
         {shown === null ? null : (
-          <Box key="advice">
-            <Text color={shown.kind === 'bigger' || shown.kind === 'harder' ? 'warning' : 'suggestion'}>◆ </Text>
-            <Text>{adviceLine(shown)} </Text>
-            {shown.isApplied && shown.actual === undefined ? <Text dimColor>switched </Text> : null}
-            {canSwitch ? (
-              <Button
-                key="switch"
-                label={switchLabel(target)}
-                onPress={async () => {
-                  const task = session.prompts.get(shown.turnId)
-
-                  if (target.isDelegate === true && task !== undefined) {
-                    await update($, advice, () => null)
-                    await delegate($, shown.turnId, task)
-
-                    return
-                  }
-
-                  session.applied.set(shown.turnId, target)
-                  await update($, advice, now => (now === null ? now : { ...now, isApplied: true }))
-                }}
-              />
-            ) : null}
-            <Button key="dismiss-advice" label="Dismiss" onPress={() => update($, advice, () => null)} />
+          <Box key="advice" flexDirection="column">
+            <Box>
+              <Text color={isWarning ? 'warning' : 'suggestion'}>{isWarning ? '▲ ' : '◆ '}</Text>
+              <Text wrap="wrap">{WORDS[shown.kind](shown)[0]}</Text>
+            </Box>
+            <Box>
+              <Text wrap="wrap">
+                {'  '}
+                {WORDS[shown.kind](shown)[1]}{' '}
+              </Text>
+              {command === undefined ? null : (
+                <Button key="use" label={`Put ${command} in prompt`} onPress={() => putCommand($, command)} />
+              )}
+              <Button key="dismiss-advice" label="Dismiss" onPress={() => update($, advice, () => null)} />
+            </Box>
           </Box>
-        )}
-        {shown?.note === undefined ? null : (
-          <Text key="note" dimColor>
-            {'  '}
-            {shown.note}
-          </Text>
         )}
         {heavy === null ? null : (
           <Box key="context" flexDirection="column">
@@ -343,7 +313,7 @@ export const register: Register = on => {
               <Text color="warning">▲ </Text>
               <Text wrap="wrap">
                 Long conversation ({tokens(heavy.tokens)} tokens): each step Claude takes rereads it, ≈{' '}
-                {dollars(heavy.cachedUsd)} a step.{' '}
+                {dollars(heavy.cachedUsd)} a step at list prices.{' '}
               </Text>
             </Box>
             <Box>

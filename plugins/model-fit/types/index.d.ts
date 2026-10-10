@@ -3,17 +3,19 @@ export type Tier = 'small' | 'mid' | 'large' | 'top'
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type Cost = { tokens: number; usd: number }
 
-export type Target = { model?: string; effort?: Effort; label: string; cost: Cost; isDelegate?: true }
+/** What to use next time; `command` is what the user types to switch, `usd` what the turn would have cost on it. */
+export type Target = { label: string; command?: string; usd?: number }
 
+/**
+ * `bigger` and `harder` warn while a complex ask runs on too little; `smaller` and `lighter` come after a simple
+ * ask ran on too much, with `actual`, what it cost, for the next ask like it.
+ */
 export type Advice = {
   turnId: string
   need: Need
-  kind: 'smaller' | 'delegate' | 'lighter' | 'bigger' | 'harder' | 'stay'
+  kind: 'smaller' | 'lighter' | 'bigger' | 'harder'
   on: string
-  estimate: Cost
-  target?: Target
-  note?: string
-  isApplied: boolean
+  target: Target
   actual?: Cost
 }
 
