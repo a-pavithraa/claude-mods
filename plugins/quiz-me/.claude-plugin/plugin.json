@@ -1,5 +1,5 @@
 {
   "name": "quiz-me",
-  "version": "0.2.0",
-  "description": "Asks three questions about what this session changed, one at a time, and checks your answers against the code."
+  "version": "0.3.0",
+  "description": "Asks one to three questions about what this session changed, one at a time, and checks your answers against the code."
 }
