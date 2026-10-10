@@ -27,8 +27,8 @@ const context = atom({ plugin: 'model-fit', key: 'context' } as const, null)
 
 const HISTORY_KEY = 'history'
 const PROMPT_CHARS = 4000
-/** Starts the prompt the subagent button sends; model-fit does not judge it again. */
-const DELEGATE_LEAD = 'Hand this task to a subagent on Haiku'
+/** The person's own prompts: typed at the terminal, or sent by Remote Control. */
+const HUMAN = new Set(['composer', 'bridge'])
 const EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 const asEffort = (value: unknown): Effort | undefined =>
@@ -64,6 +64,7 @@ type Session = {
   steps: Map<string, number>
   applied: Map<string, Target>
   prompts: Map<string, string>
+  typed: string | undefined
   level: number
   isCold: boolean
   cooling: Timer | undefined
@@ -131,7 +132,7 @@ function switchLabel(target: Target) {
 
 const delegatePrompt = (task: string) =>
   [
-    `${DELEGATE_LEAD} (Agent tool, model "haiku"). Write it a self-contained brief with every path and fact it needs`,
+    `Hand this task to a subagent on Haiku (Agent tool, model "haiku"). Write it a self-contained brief with every path and fact it needs`,
     'from this conversation, then pass on its result in two lines. Do not do the task yourself.',
     '',
     'Task:',
@@ -153,6 +154,7 @@ export const register: Register = on => {
     steps: new Map(),
     applied: new Map(),
     prompts: new Map(),
+    typed: undefined,
     level: 0,
     isCold: true,
     cooling: undefined,
@@ -168,6 +170,16 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('prompt.submit', async ($, e, next) => {
+    const entered = await next(e)
+    const text = entered.text?.trim() ?? ''
+
+    if (HUMAN.has(e.origin.kind) && text !== '' && !text.startsWith('/')) session.typed = text
+
+    return entered
+  })
+
+  // Only a turn the person started is judged: a task notification, a continuation or a plugin's prompt keeps the advice.
   on('turn.start', async ($, e, next) => {
     const isCold = session.isCold
     session.isCold = false
@@ -175,13 +187,11 @@ export const register: Register = on => {
     session.cooling = undefined
     await setCold($, false)
     const started = await next(e)
-    const text = e.text.trim()
+    const text = session.typed
+    session.typed = undefined
 
-    if (text !== '' && !text.startsWith('/')) {
+    if (text !== undefined) {
       await update($, advice, () => null)
-    }
-
-    if (text !== '' && !text.startsWith('/') && !text.startsWith(DELEGATE_LEAD)) {
       session.prompts.set(e.turnId, text)
       $.clock.after(0, () => void judge($, session, e.turnId, text, isCold))
     }
@@ -330,12 +340,12 @@ export const register: Register = on => {
             <Box>
               <Text color="warning">▲ </Text>
               <Text wrap="wrap">
-                Long conversation ({tokens(heavy.tokens)} tokens): every action Claude takes costs ≈{' '}
-                {dollars(heavy.cachedUsd)} just to reread it.{' '}
+                Long conversation ({tokens(heavy.tokens)} tokens): each step Claude takes rereads it, ≈{' '}
+                {dollars(heavy.cachedUsd)} a step.{' '}
               </Text>
             </Box>
             <Box>
-              <Text>{'  '}Starting something unrelated? /clear first. </Text>
+              <Text>{'  '}When you move on to a new task, /clear first. </Text>
               <Button key="dismiss-context" label="Dismiss" onPress={() => update($, context, () => null)} />
             </Box>
             {heavy.isCold ? (
