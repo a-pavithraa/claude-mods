@@ -1,6 +1,40 @@
 {
   "name": "model-fit",
-  "version": "0.4.0",
-  "description": "After a simple ask on a big model, says what it cost and what Haiku would have; warns when a complex ask runs on Haiku; and says when the context has grown expensive.",
-  "types": "./types/index.d.ts"
+  "version": "0.8.0",
+  "description": "After each ask you type, says what it looked like it needed and what it cost; after a simple or routine ask on a bigger model or effort than it needed, what Haiku, Sonnet or a lower effort would have cost; warns when an ask runs on too small a model or a complex one at low effort; says when the context has grown expensive and how to shrink it; ships /model-fit:baton, a handoff note for a fresh session. Optional Jev shadow labels for comparison.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "cacheTtl": {
+      "type": "string",
+      "title": "Prompt cache lifetime",
+      "description": "auto: worked out from your settings and environment (an hour on a subscription, five minutes with an API key or a cloud provider). Set 5m when a subscription has run into usage credits, which model-fit cannot see.",
+      "options": [
+        "auto",
+        "5m",
+        "1h"
+      ],
+      "default": "auto",
+      "sensitive": false,
+      "required": false
+    },
+    "jevShadow": {
+      "type": "string",
+      "title": "Jev shadow labels",
+      "description": "on: Jev labels each ask beside Haiku and /fit compares them. Haiku still drives the advice. Sends the ask and the end of the last reply to TypeSafe.",
+      "options": [
+        "off",
+        "on"
+      ],
+      "default": "off",
+      "sensitive": false,
+      "required": false
+    },
+    "typesafeApiKey": {
+      "type": "string",
+      "title": "TypeSafe API key",
+      "description": "Key for Jev shadow labels. Left empty, TYPESAFE_API_KEY is used.",
+      "sensitive": true,
+      "required": false
+    }
+  }
 }
