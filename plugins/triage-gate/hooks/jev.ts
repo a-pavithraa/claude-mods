@@ -73,6 +73,19 @@ export const LABELS: Record<string, string> = {
   mixed: 'mixes changes',
 }
 
+/** What each signal measures, in the words the pane shows under it. */
+export const MEANS: Record<string, string> = {
+  behaviour: 'Whether a user or caller would notice a difference: inputs, outputs, errors, side effects.',
+  security: 'Code that decides who may do what, handles credentials, or validates untrusted input.',
+  data: 'How data is stored or migrated, its schema, or deleting it.',
+  money: 'Charging, refunds, prices or sums of money.',
+  concurrency: 'Ordering, locks, retries, caches or timeouts.',
+  publicApi: 'Something other code or people depend on: an exported signature, endpoint, CLI flag or file format.',
+  tested: 'Whether test files in the diff exercise the behaviour it changes.',
+  mixed: 'Several unrelated changes that would be easier to review apart.',
+  readability: 'How much effort a reviewer needs to follow the diff.',
+}
+
 export function requestBody(blast: Blast, patch: string) {
   return JSON.stringify({
     model: 'jev-latest',
@@ -91,7 +104,7 @@ const asAnswers = (value: unknown): Record<string, RawAnswer> | undefined =>
     ? (value.answers as Record<string, RawAnswer>)
     : undefined
 
-export function parseJev(status: number, text: string): Jev {
+export function parseJev(status: number, text: string): Exclude<Jev, { status: 'off' }> {
   if (status === 401) {
     return { status: 'failed', note: 'Jev refused the API key (401).' }
   }

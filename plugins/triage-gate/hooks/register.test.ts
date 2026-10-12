@@ -12,6 +12,7 @@ type World = {
   key?: string
   hasNoHead?: boolean
   untracked?: string
+  staged?: string
   hashes?: string
   codexExit?: number
   draft?: string
@@ -97,6 +98,7 @@ function world(on: On, w: World) {
     seen.cwds.push(e.init?.cwd)
 
     if (verb === 'diff' && rest[0] === 'HEAD' && w.hasNoHead === true) return ok('', 128)
+    if (verb === 'diff' && rest.includes('--name-only')) return ok(w.staged ?? '')
     if (verb === 'diff' && rest.includes('--numstat')) return ok(w.numstat)
     if (verb === 'diff') return ok('diff --git a/x b/x\n+changed')
     if (verb === 'ls-files') return ok(w.untracked ?? '')
@@ -183,13 +185,13 @@ for (const surface of SURFACES) {
     await start($)
     const held = await commit($)
     expect(held.deny).toContain('triage-gate held this commit')
-    expect(held.deny).toContain('Jev: likely touches security (0.86)')
-    expect(held.deny).toContain('src/auth/session.ts is named by 14 other files')
+    expect(held.deny).toContain('Jev: likely touches security (86%)')
+    expect(held.deny).toContain('src/auth/session.ts is used by 14 other files')
     expect(seen.committed).toBe(0)
 
     const pane = await mountPane($, surface)
 
-    expect(await pane.find({ text: /HOLD FOR REVIEW/ })).toBeDefined()
+    expect(await pane.find({ text: /Hold: review before commit/ })).toBeDefined()
     expect(await pane.find({ text: /touches build, config or schema: package.json/ })).toBeDefined()
 
     await pane.press({ key: 'approve' })
@@ -209,19 +211,63 @@ test('a middling change commits but is flagged for reading', async ($, on) => {
   await commit($)
 
   expect(seen.committed).toBe(1)
-  expect(seen.toasts[0]).toContain('Committed, but worth reading: 208 lines changed; 5 files changed')
+  expect(seen.toasts[0]).toContain('Committed; review recommended: 208 lines changed; 5 files changed')
+})
+
+test('a small change Jev links to every risk topic but security is flagged for reading, not held', async ($, on) => {
+  // #given
+  const seen = world(on, {
+    numstat: '12\t3\tsrc/pager.ts\n',
+    jev: { status: 200, answers: { ...CALM, data: noul(0.8), money: noul(0.8), concurrency: noul(0.8), publicApi: noul(0.8) } },
+    key: 'k',
+  })
+  await start($)
+
+  // #when
+  await commit($)
+
+  // #then
+  expect([seen.committed, seen.toasts[0]?.includes('review recommended')]).toEqual([1, true])
+})
+
+test('a large change to a widely used file is held even without Jev', async ($, on) => {
+  // #given
+  const others = Array.from({ length: 9 }, (_, at) => `10\t0\tsrc/part${at}.ts`).join('\n')
+  const seen = world(on, { numstat: `400\t20\tsrc/pager.ts\n${others}\n`, grep: { pager: 12 } })
+  await start($)
+
+  // #when
+  const ran = await commit($)
+
+  // #then
+  expect([ran.deny?.includes('triage-gate held this commit'), seen.committed]).toEqual([true, 0])
+})
+
+test('a large change spread over isolated files is flagged for reading, not held, without Jev', async ($, on) => {
+  // #given
+  const numstat = ['alpha', 'bravo', 'charlie', 'delta']
+    .flatMap(area => [0, 1, 2].map(at => `40\t5\t${area}/part${at}.ts`))
+    .join('\n')
+  const seen = world(on, { numstat: `${numstat}\n` })
+  await start($)
+
+  // #when
+  await commit($)
+
+  // #then
+  expect([seen.committed, seen.toasts[0]?.includes('review recommended')]).toEqual([1, true])
 })
 
 test('without a key it judges blast radius alone and never calls Jev', async ($, on) => {
   const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n' })
   await start($)
 
-  expect((await triage($)).text).toBe('NO REVIEW TRIGGER (risk 0)')
+  expect((await triage($)).text).toMatch(/^No review trigger\. 1 file · \+12 −3 lines/)
   expect(seen.fetched).toBe(0)
 
   const pane = await mountPane($, 'terminal')
 
-  expect(await pane.find({ text: /Not configured/ })).toBeDefined()
+  expect(await pane.find({ text: /Add a TypeSafe key for Jev/ })).toBeDefined()
 })
 
 test('a refused key is reported, not fatal', async ($, on) => {
@@ -475,6 +521,144 @@ test('a commit that names a file is judged on the working tree, not the index', 
   expect(seen.git[0]).toBe('diff HEAD --numstat')
 })
 
+const gitReads = (git: string[]) => git.filter(call => call.startsWith('diff') || call.startsWith('ls-files'))
+
+test('git add of named paths is judged on those paths and what was already staged, not the whole tree', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tplugins/model-fit/a.ts\n', staged: 'src/old.ts\0' })
+  await start($)
+
+  // #when
+  await run($, 'git add plugins/model-fit README.md && git commit -m "change"')
+
+  // #then
+  expect(gitReads(seen.git)).toEqual([
+    'diff --cached --name-only -z',
+    'diff HEAD --numstat -- :/src/old.ts plugins/model-fit README.md',
+    'ls-files --others --exclude-standard -- plugins/model-fit README.md',
+    'diff HEAD -- :/src/old.ts plugins/model-fit README.md',
+  ])
+})
+
+test('a new file inside a named path is part of the judged change', async ($, on) => {
+  // #given
+  world(on, { numstat: '', untracked: 'plugins/model-fit/skills/baton/SKILL.md' })
+  await start($)
+
+  // #when
+  await run($, 'git add plugins/model-fit && git commit -m "change"')
+  const shown = await mountPane($, 'terminal')
+
+  // #then
+  expect(await shown.find({ text: /1 file · \+0 −0 lines/ })).toBeDefined()
+})
+
+test('git add . after cd judges that folder, from inside it', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\ta.ts\n' })
+  await start($)
+
+  // #when
+  await run($, 'cd plugins/model-fit && git add . && git commit -m "change"')
+
+  // #then
+  expect([seen.git[1], seen.cwds[1]]).toEqual(['diff HEAD --numstat -- .', 'plugins/model-fit'])
+})
+
+test('a commit message from a heredoc is not mistaken for a path', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tplugins/model-fit/a.ts\n' })
+  await start($)
+
+  // #when
+  await run($, "git add plugins/model-fit && git commit -q -F - <<'EOF'\nmodel-fit 0.8.0\nEOF")
+
+  // #then
+  expect(seen.git[1]).toBe('diff HEAD --numstat -- plugins/model-fit')
+})
+
+test('a plain commit with a heredoc message is judged on what is staged', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n' })
+  await start($)
+
+  // #when
+  await run($, "git commit -F - <<'EOF' 2>/dev/null\nchange\nEOF")
+
+  // #then
+  expect(seen.git[0]).toBe('diff --cached --numstat')
+})
+
+test('git add -A still judges the whole working tree', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n' })
+  await start($)
+
+  // #when
+  await run($, 'git add -A && git commit -m "change"')
+
+  // #then
+  expect(gitReads(seen.git)).toEqual(['diff HEAD --numstat', 'ls-files --others --exclude-standard', 'diff HEAD'])
+})
+
+test('git add -u is judged on tracked changes, without untracked files', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n', untracked: 'notes.md' })
+  await start($)
+
+  // #when
+  await run($, 'git add -u && git commit -m "change"')
+
+  // #then
+  expect(gitReads(seen.git)).toEqual(['diff HEAD --numstat', 'diff HEAD'])
+})
+
+test('paths added from another folder than the commit fall back to the whole tree', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n' })
+  await start($)
+
+  // #when
+  await run($, 'git -C other add a.ts && git commit -m "change"')
+
+  // #then
+  expect(seen.git[0]).toBe('diff HEAD --numstat')
+})
+
+test('a Codex review of a different change is folded to one line, without its findings', async ($, on) => {
+  // #given a review of the whole tree
+  world(on, { numstat: '900\t0\tsrc/huge.ts\n', key: 'k', jev: { status: 200, answers: RISKY } })
+  await start($)
+  await triage($)
+  await triage($, 'codex')
+
+  // #when a commit of one folder is held
+  await run($, 'git add plugins/model-fit && git commit -m "change"')
+  const pane = await mountPane($, 'terminal')
+
+  // #then
+  expect([
+    (await pane.find({ text: /An earlier Codex review covered a different change\. Run Codex review to check this one\./ })) !== undefined,
+    await pane.find({ text: /Fix the off-by-one in pageCount/ }),
+    await pane.find({ text: /edited since this review/ }),
+  ]).toEqual([true, undefined, undefined])
+})
+
+test('refreshing the assessment keeps the change the hold was about', async ($, on) => {
+  // #given a held commit of one folder, reviewed by Codex
+  const seen = world(on, { numstat: '900\t0\tplugins/model-fit/a.ts\n', key: 'k', jev: { status: 200, answers: RISKY } })
+  await start($)
+  await run($, 'git add plugins/model-fit && git commit -m "change"')
+  await triage($, 'codex')
+  seen.git.length = 0
+
+  // #when
+  await (await mountPane($, 'terminal')).press({ key: 'rerun' })
+
+  // #then
+  expect(seen.git).toContain('diff HEAD --numstat -- plugins/model-fit')
+})
+
 test('a Codex review is marked stale once the change is edited', async ($, on) => {
   // #given
   const w = { numstat: '12\t3\tsrc/pager.ts\n', key: 'k', untracked: 'notes.md', hashes: 'aaa' }
@@ -632,7 +816,9 @@ test('a one-line change to auth code is flagged for reading even without Jev', a
   const ran = await triage($)
 
   // #then
-  expect(ran.text).toBe('READ IT (risk 0): changes sensitive code: src/auth/guard.ts')
+  expect(ran.text).toBe(
+    'Review recommended. 1 file · +1 −1 lines · 1 area: src.\n- changes sensitive code: src/auth/guard.ts\nThe Triage pane lists the files to read first; /gate details prints everything.',
+  )
 })
 
 test('/guide adds to a draft in the prompt box instead of replacing it', async ($, on) => {
@@ -658,5 +844,155 @@ test('a verdict from local checks alone says so under the badge', async ($, on) 
   const pane = await mountPane($, 'desktop')
 
   // #then
-  expect(await pane.find({ text: /Local checks only: size, spread and file paths/ })).toBeDefined()
+  expect(await pane.find({ text: /Assessed with local checks only: size, spread and file paths/ })).toBeDefined()
+})
+
+test('the pane leads with a change summary and the files to read first, without a risk score', async ($, on) => {
+  // #given
+  world(on, {
+    numstat: '220\t40\tsrc/auth/session.ts\n30\t2\tsrc/api/routes.ts\n5\t1\tpackage.json\n',
+    grep: { session: 14 },
+    jev: { status: 200, answers: RISKY },
+    key: 'k',
+  })
+  await start($)
+  await triage($)
+
+  // #when
+  const pane = await mountPane($, 'desktop')
+
+  // #then
+  expect([
+    (await pane.find({ text: /3 files · \+255 −43 lines · 2 areas: src, root/ })) !== undefined,
+    (await pane.find({ text: /sensitive code: auth, secrets or permissions/ })) !== undefined,
+    (await pane.find({ text: /build, config or schema$/ })) !== undefined,
+    (await pane.find({ text: /risk \d/ })) !== undefined,
+    (await pane.find({ key: 'codex', text: 'Run Codex review' })) !== undefined,
+    (await pane.find({ key: 'rerun', text: 'Refresh assessment' })) !== undefined,
+  ]).toEqual([true, true, true, false, true, true])
+})
+
+test('Jev signals stay folded until asked for, then show risk and tests apart with what each measures', async ($, on) => {
+  // #given
+  world(on, { numstat: '220\t40\tsrc/auth/session.ts\n', jev: { status: 200, answers: RISKY }, key: 'k' })
+  await start($)
+  await triage($)
+  const pane = await mountPane($, 'terminal')
+  const folded = await pane.find({ text: /Code that decides who may do what/ })
+
+  // #when
+  await pane.press({ key: 'details' })
+
+  // #then
+  expect([
+    folded,
+    (await pane.find({ text: /likely · 86%/ })) !== undefined,
+    (await pane.find({ text: /Code that decides who may do what/ })) !== undefined,
+    (await pane.find({ text: 'Tests' })) !== undefined,
+    (await pane.find({ text: /unlikely · 10%/ })) !== undefined,
+  ]).toEqual([undefined, true, true, true, true])
+})
+test('an edit by Claude after triage marks the assessment stale in the default view', async ($, on) => {
+  // #given
+  world(on, { numstat: '12\t3\tsrc/pager.ts\n' })
+  await start($)
+  await triage($)
+
+  // #when
+  await write($, '/work/src/pager.ts', 3)
+  const pane = await mountPane($, 'terminal')
+
+  // #then
+  expect(await pane.find({ text: /Claude edited files after this assessment\. Refresh it\./ })).toBeDefined()
+})
+
+test('/gate details gives the signals, files and diagnostics as text, without the key', async ($, on) => {
+  // #given
+  world(on, { numstat: '220\t40\tsrc/auth/session.ts\n', jev: { status: 200, answers: RISKY }, key: 'secret-key' })
+  await start($)
+  await triage($)
+
+  // #when
+  const shown = (await triage($, 'details')).text ?? ''
+
+  // #then
+  expect([
+    shown.includes('security: likely (86%)'),
+    shown.includes('src/auth/session.ts (+220 −40): sensitive code'),
+    /Jev \(TypeSafe\) answered in \d+\.\ds · assessed just now/.test(shown),
+    shown.includes('secret-key'),
+  ]).toEqual([true, true, true, false])
+})
+
+test('a narrow pane still shows the verdict, the files and every action', async ($, on) => {
+  // #given
+  world(on, { numstat: '220\t40\tsrc/auth/deeply/nested/session-store.ts\n', jev: { status: 200, answers: RISKY }, key: 'k' })
+  await start($)
+  await triage($)
+
+  // #when
+  const pane = await $.ui.mount({
+    plugin: 'triage-gate',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'triage-gate',
+    props: { ...PANE_PROPS, bodyColumns: 28 },
+  })
+
+  // #then
+  expect([
+    (await pane.find({ text: /Hold: review before commit/ })) !== undefined,
+    (await pane.find({ text: /session-store\.ts/ })) !== undefined,
+    (await pane.find({ key: 'approve' })) !== undefined,
+    (await pane.find({ key: 'codex' })) !== undefined,
+    (await pane.find({ key: 'rerun' })) !== undefined,
+    (await pane.find({ key: 'details' })) !== undefined,
+  ]).toEqual([true, true, true, true, true, true])
+})
+test('a config file is not counted as used just because its name is a common word', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '3\t1\tplugins/model-fit/.claude-plugin/plugin.json\n', grep: { plugin: 12 } })
+  await start($)
+
+  // #when
+  const ran = await triage($)
+
+  // #then
+  expect([ran.text?.includes('used by'), seen.git.some(call => call.startsWith('grep'))]).toEqual([false, false])
+})
+
+test('the /gate reply lists at most three reasons and says how many more there are', async ($, on) => {
+  // #given
+  world(on, {
+    numstat: '220\t40\tsrc/auth/session.ts\n30\t2\tsrc/api/routes.ts\n5\t1\tpackage.json\n',
+    grep: { session: 14 },
+    jev: { status: 200, answers: RISKY },
+    key: 'k',
+  })
+  await start($)
+
+  // #when
+  const lines = ((await triage($)).text ?? '').split('\n')
+
+  // #then
+  expect([lines.filter(line => line.startsWith('- ')).length, lines.some(line => /^- and \d+ more$/.test(line))]).toEqual([4, true])
+})
+
+test('an inline pane puts the actions before the reasons and says how to scroll to the rest', async ($, on) => {
+  // #given
+  world(on, { numstat: '220\t40\tsrc/auth/session.ts\n', jev: { status: 200, answers: RISKY }, key: 'k' })
+  await start($)
+  await triage($)
+
+  // #when
+  const pane = await $.ui.mount({
+    plugin: 'triage-gate',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'triage-gate',
+    props: { ...PANE_PROPS, placement: 'inline' },
+  })
+
+  // #then
+  expect(await pane.find({ text: /use the arrow keys to scroll to Why, Start with and the signals/ })).toBeDefined()
 })

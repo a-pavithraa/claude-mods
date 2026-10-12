@@ -20,21 +20,29 @@ export type Judgment = {
   value: number
 }
 
+/** `tookMs`: how long Jev took to answer, shown in the pane's diagnostics. */
 export type Jev =
   | { status: 'off' }
-  | { status: 'failed'; note: string }
-  | { status: 'judged'; judgments: Judgment[]; hardToRead: number }
+  | { status: 'failed'; note: string; tookMs?: number }
+  | { status: 'judged'; judgments: Judgment[]; hardToRead: number; tookMs?: number }
 
 export type Verdict = 'pass' | 'read' | 'hold'
 
+/** Which change a triage judged: the commit's scope, its folder, and the paths its `git add` named. */
+export type Subject = { scope: Scope; cwd?: string; paths?: string[] }
+
 export type Triage = {
   fingerprint: string
+  subject?: Subject
   verdict: Verdict
   points: number
   reasons: string[]
   blast: Blast
   jev: Jev
   isPatchCut: boolean
+  assessedAt?: number
+  /** Claude edited a file after this assessment; set by the Edit and Write hooks. */
+  isEdited?: boolean
 }
 
 export type Scope = 'tree' | 'tracked' | 'staged'
@@ -60,6 +68,8 @@ export type Review =
       /** Claude edited a file after the review; set by the Edit and Write hooks. */
       isEdited?: boolean
       fingerprint?: string
+      /** subjectKey of the triage the review was run on; a later triage of another change hides its findings. */
+      subject?: string
       brief?: string
     }
 
@@ -77,6 +87,8 @@ declare module 'claude-code' {
       turn: TurnTally
       sizeLevel: number
       asks: string[]
+      /** The pane's Detailed signals section is open. */
+      details: boolean
     }
   }
 }

@@ -2,7 +2,8 @@
 // https://github.com/NahumLitvin/prismantis
 import type { Scope } from '../types'
 
-export type CommitCall = { cwd?: string; scope: Scope }
+/** With `paths`, the commit takes what was staged before plus what `git add` stages from those paths. */
+export type CommitCall = { cwd?: string; scope: Scope; paths?: string[] }
 
 const HEREDOC = /<<(?!<)-?\s*(['"]?)([A-Za-z_][\w-]*)\1/g
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'pwsh', 'powershell'])
@@ -133,9 +134,18 @@ const COMMIT_OPTIONS_WITH_VALUE = /^(-[a-zA-Z]*[mFCct]|--(message|file|author|da
 
 const commitsAll = (word: string) => word === '--all' || /^-[a-zA-Z]*a[a-zA-Z]*$/.test(word)
 
+/** A redirection such as `<<EOF`, `2>/dev/null` or `>`; a bare operator takes the next word as its target. */
+const REDIRECT = /^\d*(<<?-?|>>?)/
+const isBareRedirect = (word: string) => /^\d*(<<?-?|>>?)$/.test(word)
+
 function commitsWorkingTree(args: string[]): boolean {
   for (let at = 0; at < args.length; at += 1) {
     const word = args[at] ?? ''
+
+    if (REDIRECT.test(word)) {
+      if (isBareRedirect(word)) at += 1
+      continue
+    }
 
     if (commitsAll(word) || word === '--' || /^(-[a-zA-Z]*[oi][a-zA-Z]*|--only|--include)$/.test(word)) return true
     if (COMMIT_OPTIONS_WITH_VALUE.test(word)) at += 1
@@ -145,9 +155,47 @@ function commitsWorkingTree(args: string[]): boolean {
   return false
 }
 
+type Added = { scope: Scope; paths: string[] }
+
+/** What `git add` stages. Anything it cannot place exactly counts as the whole tree. */
+function addedBy(args: string[]): Added {
+  const paths: string[] = []
+  let isUpdate = false
+  let isAll = false
+
+  for (let at = 0; at < args.length; at += 1) {
+    const word = args[at] ?? ''
+
+    if (word === '--') {
+      paths.push(...args.slice(at + 1))
+      break
+    }
+
+    if (!word.startsWith('-')) paths.push(word)
+    else if (word === '-u' || word === '--update') isUpdate = true
+    else if (word === '-A' || word === '--all') isAll = true
+    else if (/^(-[a-zA-Z]*[pie][a-zA-Z]*|--(patch|interactive|edit)|--pathspec-from-file.*)$/.test(word))
+      return { scope: 'tree', paths: [] }
+  }
+
+  if (paths.length > 0) return { scope: 'tree', paths }
+
+  return { scope: isUpdate && !isAll ? 'tracked' : 'tree', paths: [] }
+}
+
+/** The union of the adds before a commit; one that reaches the whole tree, or runs from another folder, wins. */
+function joinAdds(adds: (Added & { dir?: string })[], commitDir: string | undefined): Pick<CommitCall, 'scope' | 'paths'> {
+  if (adds.length === 0) return { scope: 'tree' }
+  if (adds.some(add => add.paths.length === 0 || add.dir !== commitDir)) {
+    return { scope: adds.every(add => add.scope === 'tracked' && add.dir === commitDir) ? 'tracked' : 'tree' }
+  }
+
+  return { scope: 'tree', paths: adds.flatMap(add => add.paths) }
+}
+
 export function commitIn(command: string, isPosix = true, cwd?: string): CommitCall | undefined {
   let dir = cwd
-  let hasAdd = false
+  const adds: (Added & { dir?: string })[] = []
 
   for (const words of segmentsOf(command, isPosix)) {
     const [name, ...rest] = commandWords(words)
@@ -162,13 +210,16 @@ export function commitIn(command: string, isPosix = true, cwd?: string): CommitC
       if (inner !== undefined) return inner
     } else if (program === 'git') {
       const call = gitCall(rest)
-      hasAdd ||= call.verb === 'add'
+
+      if (call.verb === 'add') adds.push({ ...addedBy(call.rest), dir: under(dir, call.dir) })
 
       if (call.verb === 'commit') {
-        return {
-          cwd: under(dir, call.dir),
-          scope: hasAdd ? 'tree' : commitsWorkingTree(call.rest) ? 'tracked' : 'staged',
-        }
+        const commitDir = under(dir, call.dir)
+
+        if (adds.length === 0) return { cwd: commitDir, scope: commitsWorkingTree(call.rest) ? 'tracked' : 'staged' }
+        if (commitsWorkingTree(call.rest)) return { cwd: commitDir, scope: 'tree' }
+
+        return { cwd: commitDir, ...joinAdds(adds, commitDir) }
       }
     }
   }

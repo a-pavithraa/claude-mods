@@ -1,21 +1,13 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PluginOptions, Register, RenderChildren } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
-import type { ChangedFile, Jev, Review, Scope, Triage, Verdict } from '../types'
+import type { ChangedFile, Jev, Review, Scope, Subject, Triage } from '../types'
 import { blastOf, countUsers, lineCount, parseNumstat, stemOf } from './blast'
 import { addWrite, emptyTally, guidePrompt, sizeLevel, sizeNote } from './guide'
 import { JEV_URL, PATCH_CHARS, parseJev, requestBody } from './jev'
-import {
-  BRIEF_CHARS,
-  BRIEF_PROMPT,
-  addAsk,
-  fixPrompt,
-  lastLine,
-  parseReview,
-  reviewPrompt,
-  reviewScope,
-  tookOf,
-} from './review'
+import { paneOf } from './pane'
+import { detailsText, reviewHeadline, subjectKey, summaryOf } from './report'
+import { BRIEF_CHARS, BRIEF_PROMPT, addAsk, lastLine, parseReview, reviewPrompt, reviewScope } from './review'
 import { commitIn } from './shell'
 import { verdictOf } from './verdict'
 
@@ -27,9 +19,7 @@ const FAN_IN_FILES = 15
 const REVIEW_CHARS = 20_000
 const REVIEW_TIMEOUT_MS = 600_000
 const TIMED_OUT = 'timed out'
-const BAR_CELLS = 10
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
-const GOOD_WHEN_HIGH = new Set(['tested'])
 
 const triage = atom({ plugin: 'triage-gate', key: 'triage' } as const, null)
 const approved = atom({ plugin: 'triage-gate', key: 'approved' } as const, [])
@@ -37,13 +27,7 @@ const review = atom({ plugin: 'triage-gate', key: 'review' } as const, { status:
 const turn = atom({ plugin: 'triage-gate', key: 'turn' } as const, emptyTally())
 const sizeSeen = atom({ plugin: 'triage-gate', key: 'sizeLevel' } as const, 0)
 const asks = atom({ plugin: 'triage-gate', key: 'asks' } as const, [])
-
-/** A pass only means no trigger fired, not that the change is safe, so it is not drawn in green. */
-const BADGE: Record<Verdict, { mark: string; word: string; tone: 'suggestion' | 'warning' | 'error' }> = {
-  pass: { mark: '○', word: 'NO REVIEW TRIGGER', tone: 'suggestion' },
-  read: { mark: '◐', word: 'READ IT', tone: 'warning' },
-  hold: { mark: '■', word: 'HOLD FOR REVIEW', tone: 'error' },
-}
+const details = atom({ plugin: 'triage-gate', key: 'details' } as const, false)
 
 type Where = { cwd?: string; stdin?: string }
 
@@ -64,8 +48,10 @@ async function hexOf(text: string) {
     .join('')
 }
 
-async function untrackedFiles($: EngineInterface, cwd?: string) {
-  const listed = (await git($, ['ls-files', '--others', '--exclude-standard'], inside(cwd))) ?? ''
+const pathspec = (paths: string[] | undefined) => (paths === undefined ? [] : ['--', ...paths])
+
+async function untrackedFiles($: EngineInterface, cwd?: string, within?: string[]) {
+  const listed = (await git($, ['ls-files', '--others', '--exclude-standard', ...pathspec(within)], inside(cwd))) ?? ''
   const paths = listed.split(/\r?\n/).filter(Boolean)
 
   return Promise.all(
@@ -109,6 +95,8 @@ async function jevOf($: EngineInterface, key: string | undefined, body: string):
     return { status: 'off' }
   }
 
+  const startedAt = Date.now()
+
   try {
     const answered = await $.http.fetch(JEV_URL, {
       method: 'POST',
@@ -116,21 +104,38 @@ async function jevOf($: EngineInterface, key: string | undefined, body: string):
       body,
     })
 
-    return parseJev(answered.status, answered.text)
+    return { ...parseJev(answered.status, answered.text), tookMs: Date.now() - startedAt }
   } catch {
-    return { status: 'failed', note: 'Jev could not be reached; triage used blast radius only.' }
+    return { status: 'failed', note: 'Jev could not be reached; triage used blast radius only.', tookMs: Date.now() - startedAt }
   }
 }
 
-async function changedSince($: EngineInterface, scope: Scope, cwd?: string) {
+/** Already staged files, from the top of the repo (`:/`) since `cwd` may be a subfolder; `undefined` when git failed. */
+async function stagedPaths($: EngineInterface, cwd?: string) {
+  const listed = await git($, ['diff', '--cached', '--name-only', '-z'], inside(cwd))
+
+  return listed
+    ?.split('\0')
+    .filter(Boolean)
+    .map(path => `:/${path}`)
+}
+
+/**
+ * With `added` paths, the change is what was staged plus those paths against HEAD. A staged file's unstaged edits are
+ * counted too, which errs towards judging more.
+ */
+async function changedSince($: EngineInterface, scope: Scope, cwd?: string, added?: string[]) {
   const first = scope === 'staged' ? '--cached' : 'HEAD'
-  const numstat = await git($, ['diff', first, '--numstat'], inside(cwd))
+  const staged = added === undefined ? undefined : await stagedPaths($, cwd)
+  const limit = added === undefined || staged === undefined ? [] : pathspec([...staged, ...added])
+  const paths = limit.length === 0 ? undefined : added
+  const numstat = await git($, ['diff', first, '--numstat', ...limit], inside(cwd))
 
   if (numstat !== undefined || scope === 'staged') {
-    return { range: first, numstat }
+    return { range: first, limit, paths, numstat }
   }
 
-  return { range: EMPTY_TREE, numstat: await git($, ['diff', EMPTY_TREE, '--numstat'], inside(cwd)) }
+  return { range: EMPTY_TREE, limit, paths, numstat: await git($, ['diff', EMPTY_TREE, '--numstat', ...limit], inside(cwd)) }
 }
 
 async function runTriage(
@@ -138,14 +143,15 @@ async function runTriage(
   options: PluginOptions,
   scope: Scope = 'tree',
   cwd?: string,
+  added?: string[],
 ): Promise<Triage | null> {
-  const { range, numstat } = await changedSince($, scope, cwd)
+  const { range, limit, paths, numstat } = await changedSince($, scope, cwd, added)
 
   if (numstat === undefined) {
     return null
   }
 
-  const untracked = scope === 'tree' ? await untrackedFiles($, cwd) : []
+  const untracked = scope === 'tree' ? await untrackedFiles($, cwd, paths) : []
   const tracked = parseNumstat(numstat)
 
   if (tracked.length === 0 && untracked.length === 0) {
@@ -154,7 +160,7 @@ async function runTriage(
     return null
   }
 
-  const diff = (await git($, ['diff', range], inside(cwd))) ?? ''
+  const diff = (await git($, ['diff', range, ...limit], inside(cwd))) ?? ''
   const fullPatch = [
     diff,
     ...untracked.map(({ file, text }) => `+++ new file ${file.path}\n${text.slice(0, UNTRACKED_CHARS)}`),
@@ -172,12 +178,15 @@ async function runTriage(
       ? configured
       : await $.env.get('TYPESAFE_API_KEY')
   const jev = await jevOf($, key, requestBody(blast, patch))
+  const subject: Subject = { scope, ...(cwd === undefined ? {} : { cwd }), ...(added === undefined ? {} : { paths: added }) }
   const judged: Triage = {
+    subject,
     fingerprint: await hexOf(`${diff}\n${await identityOf($, untracked, cwd)}`),
     ...verdictOf(blast, jev),
     blast,
     jev,
     isPatchCut: fullPatch.length > PATCH_CHARS,
+    assessedAt: Date.now(),
   }
 
   await update($, triage, () => judged)
@@ -189,25 +198,6 @@ async function briefOf($: EngineInterface) {
   const reply = await $.model.fork({ prompt: BRIEF_PROMPT }).catch(() => undefined)
 
   return reply?.isAnswered === true ? reply.text.trim().slice(0, BRIEF_CHARS) : undefined
-}
-
-/** What this verdict rests on, so a pass from local checks alone is not read as a full one. */
-function coverageOf(judged: Triage) {
-  const { jev } = judged
-
-  if (jev.status === 'off') return 'Local checks only: size, spread and file paths. Jev is not configured.'
-  if (jev.status === 'failed') return `Local checks only: Jev gave no judgement. ${jev.note}`
-  if (judged.isPatchCut) return `Partial: Jev saw only the first ${PATCH_CHARS / 1000}k characters of the diff.`
-
-  return 'Local checks and Jev, on the whole diff.'
-}
-
-function reviewHeadline(done: Extract<Review, { status: 'done' }>) {
-  if (done.findings.length > 0) return `Codex found ${done.findings.length} ${done.findings.length === 1 ? 'problem' : 'problems'}`
-  if (done.isTimedOut === true) return 'Codex review timed out; it listed no findings'
-  if (!done.isClean) return 'Codex review failed; it listed no findings'
-
-  return 'Codex review finished with no findings listed'
 }
 
 /** Puts `text` in the prompt box after whatever the user has typed there, never over it. */
@@ -223,12 +213,14 @@ ${text}`, mode: 'append' })
 
 async function markEdited($: EngineInterface) {
   await update($, review, held => (held.status === 'done' && held.isEdited !== true ? { ...held, isEdited: true } : held))
+  await update($, triage, held => (held !== null && held.isEdited !== true ? { ...held, isEdited: true } : held))
 }
 
 async function runCodex($: EngineInterface, options: PluginOptions, focus = '') {
   const startedAt = Date.now()
   const judged = await read($, triage)
   const fingerprint = judged?.fingerprint
+  const subject = subjectKey(judged?.subject)
   const covers = reviewScope(judged, focus).label
   await update($, review, (): Review => ({ status: 'running', covers, tookMs: 0, doing: 'Writing down what was asked for…' }))
   const brief = await briefOf($)
@@ -295,6 +287,7 @@ async function runCodex($: EngineInterface, options: PluginOptions, focus = '') 
     isClean: exit === 0,
     ...(isTimedOut ? { isTimedOut } : {}),
     ...(fingerprint === undefined ? {} : { fingerprint }),
+    ...(subject === undefined ? {} : { subject }),
   }
   await update($, review, () => done)
 
@@ -322,18 +315,7 @@ async function noteSize($: EngineInterface) {
   }
 }
 
-const summaryOf = (judged: Triage) =>
-  `${BADGE[judged.verdict].word} (risk ${judged.points})${judged.reasons.length > 0 ? `: ${judged.reasons.join('; ')}` : ''}`
-
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE })
-
-const bar = (value: number) => {
-  const filled = Math.round(Math.min(1, Math.max(0, value)) * BAR_CELLS)
-
-  return { filled: '█'.repeat(filled), empty: '░'.repeat(BAR_CELLS - filled) }
-}
-
-const toneOf = (risk: number) => (risk >= 0.7 ? 'error' : risk >= 0.4 ? 'warning' : 'success')
 
 async function gate($: EngineInterface, options: PluginOptions, command: string, isPosix: boolean) {
   const commit = commitIn(command, isPosix)
@@ -342,7 +324,7 @@ async function gate($: EngineInterface, options: PluginOptions, command: string,
     return undefined
   }
 
-  const judged = await runTriage($, options, commit.scope, commit.cwd)
+  const judged = await runTriage($, options, commit.scope, commit.cwd, commit.paths)
 
   if (judged === null || (await read($, approved)).includes(judged.fingerprint)) {
     return undefined
@@ -351,11 +333,11 @@ async function gate($: EngineInterface, options: PluginOptions, command: string,
   if (judged.verdict === 'hold') {
     void openPane($)
 
-    return `triage-gate held this commit for human review, ${summaryOf(judged)}. Do not retry the commit or work around this hold. Tell the user: they can read the change, run /gate codex for a Codex review, or run /gate approve to let this exact change through.`
+    return `triage-gate held this commit for human review. Why: ${judged.reasons.join('; ')}. Do not retry the commit or work around this hold. Tell the user: they can read the change, run /gate codex for a Codex review, or run /gate approve to let this exact change through.`
   }
 
   if (judged.verdict === 'read') {
-    $.ui.toast(`Committed, but worth reading: ${judged.reasons.slice(0, 2).join('; ')}. /gate shows why.`, {
+    $.ui.toast(`Committed; review recommended: ${judged.reasons.slice(0, 2).join('; ')}. /gate shows what to read.`, {
       timeoutMs: 10000,
     })
   }
@@ -368,7 +350,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'gate',
       description: 'Judge the uncommitted change: blast radius, risk and readability',
-      argumentHint: '[approve | codex [what to focus on]]',
+      argumentHint: '[approve | details | codex [what to focus on]]',
     })
     await $.command.register({
       name: 'guide',
@@ -461,6 +443,12 @@ export const register: Register = (on, options) => {
       return { text: 'Approved. Claude can commit this exact change now; any further edit needs triage again.' }
     }
 
+    if (asked === 'details') {
+      const judged = await read($, triage)
+
+      return { text: judged === null ? 'Nothing has been triaged yet. Run /gate first.' : detailsText(judged) }
+    }
+
     if (asked === 'codex' || asked.startsWith('codex ')) {
       void openPane($)
       const done = await runCodex($, options, asked.slice('codex'.length).trim())
@@ -475,233 +463,21 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
     const judged = await read($, triage)
-    const reviewed = await read($, review)
-    const isApproved = judged !== null && (await read($, approved)).includes(judged.fingerprint)
-
-    const isStale =
-      reviewed.status === 'done' &&
-      (reviewed.isEdited === true ||
-        (judged !== null && reviewed.fingerprint !== undefined && reviewed.fingerprint !== judged.fingerprint))
-    const reviewBox = (
-      <Box flexDirection="column">
-        {reviewed.status === 'running' && (
-          <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="suggestion" paddingX={1}>
-            <Box>
-              <Text bold color="suggestion">
-                Codex is reviewing…
-              </Text>
-              <Box flexGrow={1} />
-              <Text dimColor>{tookOf(reviewed.tookMs)}</Text>
-            </Box>
-            <Text dimColor wrap="truncate-end">
-              {reviewed.doing ?? 'Starting Codex. A review usually takes a few minutes.'}
-            </Text>
-            <Text dimColor wrap="wrap">
-              Reviewing {reviewed.covers}. This run is billed to your Codex account.
-            </Text>
-          </Box>
-        )}
-
-        {reviewed.status === 'done' && (
-          <Box
-            flexDirection="column"
-            marginTop={1}
-            borderStyle="round"
-            borderColor={reviewed.findings.length > 0 || !reviewed.isClean ? 'warning' : 'subtle'}
-            paddingX={1}
-          >
-            <Box>
-              <Text bold color={reviewed.findings.length > 0 || !reviewed.isClean ? 'warning' : 'success'}>
-                {reviewHeadline(reviewed)}
-              </Text>
-              <Box flexGrow={1} />
-              <Text dimColor>{tookOf(reviewed.tookMs)}</Text>
-            </Box>
-            <Text dimColor wrap="wrap">
-              Covered {reviewed.covers}.
-            </Text>
-            {reviewed.brief !== undefined && (
-              <Box flexDirection="column">
-                <Text dimColor>Codex was told this is what was built:</Text>
-                <Text dimColor wrap="wrap">
-                  {reviewed.brief}
-                </Text>
-              </Box>
-            )}
-            {isStale && (
-              <Text color="warning" wrap="wrap">
-                ▲ The change has been edited since this review. Run it again.
-              </Text>
-            )}
-            {reviewed.summary !== '' && <Text wrap="wrap">{reviewed.summary}</Text>}
-            {reviewed.findings.map(one => (
-              <Box flexDirection="column" marginTop={1}>
-                <Box>
-                  <Text bold color={one.priority === 'P1' ? 'error' : 'warning'}>
-                    {one.priority}{' '}
-                  </Text>
-                  <Box flexShrink={1}>
-                    <Text bold wrap="wrap">
-                      {one.title}
-                    </Text>
-                  </Box>
-                </Box>
-                <Text color="suggestion" wrap="truncate-end">
-                  ↳ {one.at}
-                </Text>
-                <Text dimColor wrap="wrap">
-                  {one.body}
-                </Text>
-              </Box>
-            ))}
-            {reviewed.findings.length > 0 && (
-              <Box marginTop={1}>
-                <Button
-                  key="fix"
-                  label="Send to Claude"
-                  variant="primary"
-                  onPress={async () => {
-                    await fillKeepingDraft($, fixPrompt(reviewed.findings))
-                  }}
-                />
-              </Box>
-            )}
-          </Box>
-        )}
-      </Box>
-    )
-
-    if (judged === null) {
-      return (
-        <Box flexDirection="column">
-          <Text dimColor wrap="wrap">
-            Nothing triaged yet. Triage runs when Claude commits, or type /gate.
-          </Text>
-          {reviewBox}
-        </Box>
-      )
+    const view = {
+      judged,
+      reviewed: await read($, review),
+      isApproved: judged !== null && (await read($, approved)).includes(judged.fingerprint),
+      isOpen: await read($, details),
+      isScrollHinted: e.props.placement === 'inline' && !e.props.isFocused,
     }
 
-    const badge = BADGE[judged.verdict]
-    const { blast, jev } = judged
-    const ruleCells = e.surface === 'terminal' ? 1 : 2
-    const cells = (widths: number[], held: RenderChildren[]) =>
-      held.flatMap((one, at) => [
-        at > 0 ? <Text dimColor> │ </Text> : null,
-        <Box width={widths[at] ?? 0} flexShrink={0} overflow="hidden">
-          {one}
-        </Box>,
-      ])
-    const table = (widths: number[], header: string[], rows: RenderChildren[][]) => (
-      <Box flexDirection="column" borderStyle="single" borderDimColor paddingX={1} alignSelf="flex-start">
-        <Box>{cells(widths, header.map(name => <Text bold>{name}</Text>))}</Box>
-        <Box>{cells(widths, widths.map(width => <Text dimColor>{'─'.repeat(width * ruleCells)}</Text>))}</Box>
-        {rows.map(row => (
-          <Box>{cells(widths, row)}</Box>
-        ))}
-      </Box>
-    )
-
-    return (
-      <Box flexDirection="column">
-        <Box>
-          <Text color={badge.tone} bold>
-            {badge.mark} {badge.word}
-          </Text>
-          <Box flexGrow={1} />
-          <Text dimColor>risk {judged.points}</Text>
-          {isApproved && <Text color="success"> · approved</Text>}
-        </Box>
-        <Text color={jev.status === 'judged' && !judged.isPatchCut ? undefined : 'warning'} dimColor={jev.status === 'judged' && !judged.isPatchCut} wrap="wrap">
-          {coverageOf(judged)}
-        </Text>
-
-        <Box marginTop={1}>
-          <Text bold color="claude">
-            BLAST RADIUS
-          </Text>
-        </Box>
-        {table(
-          [8, 8, 8],
-          ['files', 'lines', 'areas'],
-          [[<Text>{blast.files.length}</Text>, <Text>{blast.lines}</Text>, <Text>{blast.areas.length}</Text>]],
-        )}
-        {blast.widest !== undefined && (
-          <Text dimColor wrap="wrap">
-            widest: {blast.widest.path} named by {blast.widest.usedBy} files
-          </Text>
-        )}
-        {blast.risky.length > 0 && (
-          <Text color="warning" wrap="wrap">
-            ▲ {blast.risky.join(', ')}
-          </Text>
-        )}
-
-        <Box marginTop={1}>
-          <Text bold color="claude">
-            JEV
-          </Text>
-        </Box>
-        {jev.status === 'off' && (
-          <Text dimColor wrap="wrap">
-            Not configured. Set the TypeSafe API key in /config or TYPESAFE_API_KEY.
-          </Text>
-        )}
-        {jev.status === 'failed' && <Text dimColor>No judgement this time; see the line under the verdict.</Text>}
-        {jev.status === 'judged' &&
-          table(
-            [18, BAR_CELLS, 5],
-            ['signal', 'likelihood', ''],
-            [...jev.judgments, { key: 'readability', label: 'hard to read', value: jev.hardToRead }].map(one => {
-              const cells = bar(one.value)
-
-              return [
-                <Text>{one.label}</Text>,
-                <Box>
-                  <Text color={toneOf(GOOD_WHEN_HIGH.has(one.key) ? 1 - one.value : one.value)}>{cells.filled}</Text>
-                  <Text dimColor>{cells.empty}</Text>
-                </Box>,
-                <Text>{one.value.toFixed(2)}</Text>,
-              ]
-            }),
-          )}
-
-        {judged.reasons.length > 0 && (
-          <Box marginTop={1}>
-            <Text bold color="claude">
-              WHY
-            </Text>
-          </Box>
-        )}
-        {judged.reasons.map(reason => (
-          <Text wrap="wrap">· {reason}</Text>
-        ))}
-
-        <Box marginTop={1} gap={1}>
-          <Button key="rerun" label="Triage again" onPress={async () => void (await runTriage($, options))} />
-          <Button
-            key="codex"
-            label={reviewed.status === 'running' ? 'Codex reviewing…' : 'Codex review'}
-            onPress={async () => {
-              if (reviewed.status !== 'running') {
-                await runCodex($, options)
-              }
-            }}
-          />
-          {judged.verdict === 'hold' && !isApproved && (
-            <Button
-              key="approve"
-              label="Approve"
-              variant="primary"
-              onPress={() => update($, approved, list => [...new Set([...list, judged.fingerprint])])}
-            />
-          )}
-        </Box>
-
-        {reviewBox}
-      </Box>
-    )
+    return paneOf($.ui.resolve(e), view, {
+      approve: fingerprint => update($, approved, list => [...new Set([...list, fingerprint])]),
+      toggleDetails: () => update($, details, open => !open),
+      triage: () => runTriage($, options, judged?.subject?.scope, judged?.subject?.cwd, judged?.subject?.paths),
+      codex: () => runCodex($, options),
+      send: text => fillKeepingDraft($, text),
+    })
   })
 }
