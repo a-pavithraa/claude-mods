@@ -1,65 +1,59 @@
-# Mods handoff (2026-10-10)
+# Mods handoff (2026-10-12)
 
-What this is: three Claude Code mods (function-hook plugins) and one skill plugin, built to fight comprehension debt and model cost, published as the local marketplace `my-mods`. None of this is part of build-compass; it moved out of `D:\project-map-agent\mods` into this repo on 2026-10-10.
+Three Claude Code mods (function-hook plugins) and one skill plugin, published as the local marketplace `my-mods`. What each does for a user is in [README.md](README.md); mod API lessons are in [API-LESSONS.md](API-LESSONS.md). This file holds state, decisions and open work.
 
-## The plugins
+## Next action
 
-| Plugin | What it does | Tests | Verified live? |
+Check model-fit 0.7.0 in a live session: run `/reload-plugins`, grow a conversation past 100k tokens, press both new buttons, then run `/model-fit:baton`. Done when the band shows the new lines, each button fills the prompt box, and the baton note opens with a Next action.
+
+## State
+
+| Plugin | Version | Tests | Verified live? |
 |---|---|---|---|
-| `triage-gate` | Gates `git commit` on blast radius plus Jev judgements (Jev is TypeSafe's judging API): holds, flags for reading, or passes. Also `/gate [approve\|codex]` and a pane. Three triggers: before a commit (can hold), on request (`/gate`), and at turn end a local-only size alert when the uncommitted change passes 150, 400 or 1,000 lines (one toast per level, no Jev call). `/guide` puts a reading-guide request for the turn's files in the prompt box, after any draft already there; "Send to Claude" does the same. A line under the verdict says what it rests on: local checks only (no key, or Jev failed), a partial diff, or the whole diff with Jev. A plain commit is judged on what is staged; `commit -a` or a commit naming paths on tracked changes; a command that also runs `git add` on the whole working tree. The commit is found by parsing the command (`hooks/shell.ts`, adapted from prismantis, MIT), so `cd`, `git -C`, `bash -c` and heredoc bodies are handled. The Codex review streams (`$.process.spawn`): the pane shows elapsed time and Codex's latest line, then findings as a list with a "Send to Claude" button, and marks the review stale once Claude edits a file (Edit or Write) or a later triage sees a different change; an edit by hand or through Bash is not seen until the next triage. A failed or timed-out run says so in the pane and in `/gate codex`'s reply, and a review run before any triage still shows. The 10-minute timeout now fires even when Codex prints nothing. A change to sensitive paths (auth, session, token, secret, password, permission, policy, crypto, `.env`) is never a pass, and Jev judging security likely (≥0.7) holds the commit whatever its size. Since 0.7.0 the Codex file list puts flagged files first (auth, secrets, config and similar paths, the risky build or schema files, the most-used file), then the largest, and a pass reads "NO REVIEW TRIGGER" in a neutral colour instead of a green PASS | 36 | Partly: the old 0.1.0 copy made a real Jev call and held, and a Codex run finished (2026-10-10). The request shape matches the TypeSafe API docs. Not seen live in 0.6.0: the streamed review, the size alert, `/guide`, the staged-only scope |
-| `model-fit` | Advice for the next ask, never a switch mid-turn (0.4.0). After a simple ask ran on Sonnet, Opus or Fable, the band prices the turn's real token use on Haiku and, if Haiku is 25% cheaper or more, says so with a "Put /model haiku in prompt" button (only into an empty box); a simple ask at high effort that Haiku would not save on gets "lower the effort". A complex ask on Haiku or at low effort gets a warning while it runs: "if the answer looks thin, run it again on Opus". All $ are labelled list-price estimates. Context alerts at 100k/200k/400k/700k tokens stay (band only; after an idle hour it adds what the next action costs). Haiku labels each typed prompt together with the end of the last reply, so "yes please" is judged by the plan it approves; a label that comes back after its turn ended still counts. A turn over 3x its label's typical steps gets no advice and is counted as a wrong label, shown in `/fit`. Also `/fit [reset]` | 14 | Partly: band seen in terminal (0.2.0); 0.4.0 not seen live |
-| `quiz-me` | A skill, not a mod, since 0.2.0: `/quiz-me:quiz` asks one to three "what happens when…" questions (by the size of the change) on what the session changed, one at a time; you answer in your own words and it judges against the code. It leaves out uncommitted work from before the session, claims no more than "every situation right", reports where the code does not do what was asked, and gives no merge verdict (0.3.0). The 0.1.0 mod (pane, Show answer buttons, `$.model.fork`) is in the first commit | n/a | No: 0.2.0 not run yet |
-| `hindsight` | Watches the main loop for three snags: 10+ Grep/Glob/Read before the first edit of a turn (area = most common folder, 3 deep), a command that fails, gets an edit, and fails again (area = its first plain words), and a tool output over 20k characters. Snags are kept per repo in the store; when one comes back in a 2nd session, one `$.model.fork` (at most 2 per session) proposes a fix and its kind. A one-row band after the turn: a pointer gets Save (marked section of ./CLAUDE.md, 15 lines max; status `done`), any other kind gets "Put task in prompt" (status `sent`: handed over, not known to be done); Skip means "not now": the snag counts sessions from zero and can be proposed again; a `done` or `sent` snag that comes back in a later session reopens as "back after a fix", and the fork is told which fixes did not hold (0.2.0); also "Not in this repo" (mutes that snag) and Skip. `/hindsight` lists the repo's snags and fills the prompt box with `/mattpocock-skills:retro` plus them. Named so it does not clash with the retro skill. Plan: `docs/hindsight-plan.packed.html` | 10 | No: installed 2026-10-10, not run live |
+| `triage-gate` | 0.8.3 | 57 | Partly: 0.1.0 made a real Jev call and held, and a Codex run finished (2026-10-10) |
+| `model-fit` | 0.8.0 | 38 | Partly: band seen in terminal (0.2.0) |
+| `hindsight` | 0.4.0 | 31 | Partly: 0.2.0 recorded snags, proposed a fix and handed off to the retro (2026-10-12) |
+| `quiz-me` (skill) | 0.3.0 | n/a | No |
 
-`map-reader` was dropped on 2026-10-10: its pane mostly repeated the project map, and marking files read had no consequence. Only its big-turn toast and `/guide` were kept, in `triage-gate`.
+- **Committed (2026-10-12):** model-fit 0.8.0 (`c4cd55c`), triage-gate 0.8.3 (`97060e5`), hindsight 0.4.0 (`35af341`); what each version changed is in its commit message.
+- **Gate follow-up:** **Approve commit** gives no feedback, and stays clickable on a stale assessment. Show "Approved. Ask Claude to run the commit again.", and offer Refresh assessment instead of Approve when the assessment is stale.
+- **Assumed, to verify live:**
+  - triage-gate: a real commit with the key set; the 0.8.0 pane on desktop and narrow terminals; the streamed Codex review, timeout and size alert; `/guide`; whether Codex prints progress on stderr (the running box relies on it).
+  - model-fit: the verdict line; that the advice shows after a simple turn and `/model haiku` lands in the prompt box; Jev shadow against the real API (the `score` probability keys are assumed "0".."2"); whether the detected cache lifetime matches `claude -p "hello" --output-format json` (`usage.cache_creation`); that `turn.step` reports full model ids so the 5.5 effort rule matches; whether a desktop survey is why the 2+2 advice vanished (`claude --debug`); 0.7.0: that `/model-fit:baton` is found without a `skills` entry in the manifest, and how the three context buttons wrap in a narrow terminal.
+  - hindsight 0.4.0: that a call declined at the dialog never reaches `tool.call` (the refusal signal relies on it; the test kit's `$.tool.check` carries no `tool_use_id`, so only the pure logic is tested); that the 60s timing excludes the time a dialog is open; the held count over real sessions. 0.3.0: the size re-check and the sizes in the proposal; that a Bash call with a non-zero exit comes back with `isError` (the fix-loop signal relies on it), and how the proposals read.
+  - quiz-me 0.3.0.
 
-Each mod: `plugins/<mod>/` with `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.tsx` and helpers, `hooks/*.test.ts`, `types/index.d.ts`.
-Check with `claude plugin validate plugins/<mod>` and `claude plugin test plugins/<mod>`, and `claude plugin validate .` for the marketplace.
+## Decisions
 
-## Where things live
-
-- **Source:** this repo, `D:\claude-mods`. `.claude-plugin/marketplace.json` makes it the marketplace `my-mods`; `~/.claude/settings.json` (`extraKnownMarketplaces`) and `~/.claude/plugins/known_marketplaces.json` point at it.
-- **What runs:** a directory marketplace is read in place (`claude plugin list` shows "Read from: D:\claude-mods\plugins\<mod>"), so an edit here takes effect at the next session start or `/reload-plugins`. A version bump plus `claude plugin marketplace update my-mods` and `claude plugin update <mod>@my-mods` is only needed to record a new version.
-- **Gone (2026-10-10):** `~/.claude/mods` and `D:\project-map-agent\mods`, both identical to this repo's first commit.
-- **Dev folder:** `C:\Users\Pavithra\.claude\dev-mods\e1376fad-a1c1-453c-b3f9-42f459bd8f71\<mod>` still has older copies, including the dropped map-reader and turn-pulse. Nothing loads it. Delete it once those two are surely not wanted back.
-- **Plugin cache leftovers:** `~/.claude/plugins/cache/my-mods/` still holds install-time copies; directory installs no longer read them.
-
-## Open decisions (start here)
+Open:
 
 1. **A remote for this repo** and a CI job running validate and test for each plugin. Neither exists yet.
 
-## Still to do
+Made, with the reasons the README leaves out:
 
-- **triage-gate key:** set the Jev key yourself. Never paste it into chat or put it in the settings.json `env` block.
-  ```
-  claude plugin configure triage-gate@my-mods
-  ```
-  The key option is secret, so it never shows in `/config`. The mod falls back to the `TYPESAFE_API_KEY` env var.
-- **triage-gate live test:** make a real commit with the key set, try `/gate codex`, and check the pane on desktop.
-- **model-fit:**
-  - The prices in `hooks/fit.ts` were set on 2026-10-10 from the claude-api skill's table: Haiku 5.5 $0.10/$0.50 (5x that for prompts over 100k), Sonnet 5.5 $2/$10, Opus 5.5 $4/$20, Fable 5.1 $10/$50; cache reads $0.20 (Sonnet, Opus) and $0.25 (Fable). Haiku's cache-read rate (0.1x input) and the 2x one-hour cache-write rate are assumptions. Older Opus and Sonnet versions are priced as the current ones.
-  - The Haiku price in the advice assumes Haiku would have taken the same steps and tokens; the band says so. It is a lower bound on what Haiku would cost.
-  - The 0.3.x mid-turn switch and subagent hand-off were removed in 0.4.0: a simple turn was usually over before the button could be pressed.
-  - Your `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50` means that on 200k windows, compaction lands at about the same point as the first context alert.
-- **Not verified live:** triage-gate 0.7.0's streamed review, timeout, coverage line, box tables, size alert and `/guide`; the quiz-me 0.3.0 skill; model-fit 0.4.0 (above all that the advice shows after a simple turn and that `/model haiku` lands in the prompt box); all of hindsight. For hindsight, confirm live that a Bash call with a non-zero exit comes back with `isError` (the fix-loop signal relies on it), and see how the fork's proposals read.
-- **Reviews of the mods** (2026-10-10, kept outside the repo). Done from them: triage-gate 0.7.0, hindsight 0.2.0, quiz-me 0.3.0, model-fit 0.4.0. Left for after live use: a short failure signature per hindsight snag (so two different `npm test` failures are not one snag), and per-repo review rules for triage-gate (a file of paths that always hold) if the built-in sensitive-path guess is noisy.
-- **turn-pulse was dropped** on 2026-10-10: the user could not tell what it was for, and the app already shows tool calls and notifies when a turn ends. A copy remains in the dev folder.
-- **triage-gate sends code out.** With a key set, every commit Claude makes posts up to 60k characters of the diff to api.typesafe.ai. Any error in the gate lets the commit through.
-- **Codex review is prompted (0.5.0).** It runs `codex exec review -` with instructions on stdin: review only the 15 largest changed files from the last triage, the triage's reasons, an optional focus (`/gate codex <focus>`), at most 5 findings in a fixed shape. Since 0.6.0 it also carries the intent: the user's last three prompts in their own words, and a six-line summary of what was built that Claude writes through `$.model.fork` (one extra Claude request per review). The pane shows that summary. `--uncommitted` cannot be combined with a prompt (Codex refuses it). Each run is billed to the user's Codex account; it only runs on request. The `codexModel` option picks a cheaper model. Whether Codex prints its progress on stderr while it works, which the running box relies on, is not confirmed.
-- **prismantis** (github.com/NahumLitvin/prismantis) is a display mod: it restyles replies and condenses tool rows. Its shell parser was reused, and the Triage pane's blast-radius and Jev tables follow its box-table look, built from fixed-width cells because the desktop pane's font is not monospace. Not installed.
-- **slice-guard is retired.** A copy remains in the dev folder and the plugin cache; delete them.
-- **quiz-me became a skill** (2026-10-10): it used no hooks, only `/quiz` and a pane, so it did not need to be a mod. It stays its own plugin so it stays opt-in.
+- **triage-gate:** the commit is found by parsing the shell command (`hooks/shell.ts`, adapted from prismantis, MIT), so `cd`, `git -C`, `bash -c` and heredocs are handled. A plain commit is judged on what is staged; `commit -a` or named paths on tracked changes; a command that also runs `git add` on what was staged plus the added paths (`-A` or no paths: the whole tree; `-u`: tracked changes; `-p`, `-i`, `-e`, `--pathspec-from-file`, or an add from another folder: the whole tree). Staged files are passed as `:/<path>` so a commit run from a subfolder still finds them. The points total drives the verdict but is never shown; points are capped per kind (size 3, reach 2, Jev risk 2, Jev quality 2; hold at 5), so Jev topic noise alone cannot hold a small change. Jev security ≥0.7 holds whatever the size. Any error in the gate lets the commit through. The pane lives in `hooks/pane.tsx` as a pure view; `register.tsx` reads state and passes data and callbacks in.
+- **triage-gate Codex review:** `codex exec review -` with instructions on stdin: the flagged files then the largest (15 at most), the triage's reasons, an optional focus, at most 5 findings in a fixed shape, the user's last three prompts, and a six-line brief Claude writes through `$.model.fork` (one extra request per review). `--uncommitted` cannot be combined with a prompt. Streams through `$.process.spawn`; the 10-minute timeout fires even when Codex prints nothing.
+- **model-fit:** prices in `hooks/fit.ts` come from platform.claude.com/docs/en/about-claude/pricing (2026-10-12); older Opus and Sonnet versions are priced as current ones. Cache lifetime and the effort-keeps-cache rule follow code.claude.com/docs/en/prompt-caching; `/model` cannot set effort, so effort advice uses `/effort <level>`. Each label maps to a model and effort (trivial Haiku/low, normal Sonnet/medium, complex Opus/high) from Claude Code's "choosing a level" guidance. No published output-per-effort figures, so an effort change is never priced. The Haiku price assumes the same steps and tokens, so it is a lower bound. The band yields while `AbovePrompt.hasSurvey` is true. 0.4.0 removed the mid-turn switch: a simple turn was usually over before the button could be pressed.
+- **model-fit baton:** the handoff skill ships in model-fit so the command the band names is always installed. It is user-invoked, so it costs no context until typed. Rejected: editing mattpocock's `handoff` (the plugin cache is overwritten on update) and a mod command (a writing rule belongs in a skill). Cache warming was rejected too: a ping adds turns to the history it protects, and pays only if you return within about 20 pings.
+- **hindsight:** a snag's area is a path relative to the repo, with hash and UUID folders as `*` so it recurs across installs: the file searched twice or more, else the folder all searches share; for a read, the file; for shell output, each program and its first target (`cat HANDOFF.md, ls plugins`); for a fix loop, the command's first plain words. A read followed by an edit of the same file in the turn is not a snag. A big-read snag is re-checked with `$.fs.stat` before the fork, and reset if the file is now under 20k bytes. Each snag keeps its last 5 calls (one per session) with their cost as evidence for the fork and `/hindsight`. Slow calls are timed with `$.clock.now()` around `next(e)` on Bash and PowerShell (60s). A refusal is a `tool.check` that answered `ask` on the main loop whose `tool_use_id` never reached `tool.call` by the turn's end. A fix is held after 5 sessions in the repo start without the snag (counted at `session.start`). Interrupted turns and corrections were left out on purpose: their fix is usually the prompt or the code, which the retro does not cover. At most 2 `$.model.fork` proposals per session; the Save section of `./CLAUDE.md` is capped at 15 lines. Plan: `docs/hindsight-plan.packed.html`.
+- **quiz-me** is a skill since 0.2.0: it used no hooks. The 0.1.0 mod is in the first commit.
+- **Dropped 2026-10-10:** map-reader (its toast and `/guide` live on in triage-gate), turn-pulse, slice-guard.
 
-## API lessons (save re-learning)
+## Gotchas
 
-- Mock answers in tests are `{ value: ... }`. A plugin's deny comes back as `result.deny`. `command.run` needs `origin` and `presentation`.
-- `$.clock.after` needs `mock.clock(on)`. Advance it with `clock.settle()` or `clock.advance(ms)`.
-- `$.ui.mount` of a band whose hook calls `next(e)` needs a bottom hook: `on('ui.render', () => ({ type: 'engine', ref: 0 }))`. Return a tree there instead (`{ type: 'Text', children: ['…'] }`) to stand in for another plugin's band. Of two `ui.render` mocks, the first registered answers.
-- The band above the prompt is one instance: a hook that returns without `next` hides every plugin below it. `next(e)` resolves to `{ type: 'engine' }` when nothing below drew.
-- `$.ui.status` is drawn by the engine as `⚠ <plugin>: <text>`; it can't be restyled. The `Spinner` render's `suffix` prop is a friendlier place for live turn info.
-- Only pass `$` to top-level functions, or validate fails. `$.prompt.submit` from `command.run` is refused; use `$.prompt.fill`.
-- `turn.step` hooks must be async generators: `return yield* next({ ...e, model })` rewrites the model for that request.
-- `session.measure` pushes context tokens after each turn. `$.model.classify(text, labels, { model: 'haiku' })` is the cheap classifier.
-- On Windows, start Codex through `cmd.exe /d /c codex …`; a bare spawn fails with ENOENT.
-- Type-check a mod with `npx -p typescript@5.6.3 tsc -p <mod>`. The engine writes `.claude-plugin/types/` when it loads the mod; before that, copy them from another mod.
-- The API reference is `claude-code.d.ts` from the `plugin-authoring` skill. Load the skill and grep the file it names.
+- Before you test an edit: a directory marketplace is read in place, so an edit takes effect at the next session start or `/reload-plugins`. A version bump plus `claude plugin marketplace update my-mods` and `claude plugin update <mod>@my-mods` only records a new version.
+- Before you set the triage-gate key: set it with `claude plugin configure triage-gate@my-mods`, never in chat or the settings.json `env` block. It falls back to `TYPESAFE_API_KEY`. With a key, every commit Claude makes posts up to 60k characters of diff to api.typesafe.ai.
+- `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50` puts compaction on 200k windows at about the first model-fit context alert.
+
+## Pointers
+
+- Each mod: `plugins/<mod>/` with `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.tsx` and helpers, `hooks/*.test.ts`, `types/index.d.ts`. A skill plugin has `skills/<name>/SKILL.md`.
+- Checks: `claude plugin validate plugins/<mod>`, `claude plugin test plugins/<mod>`, and `claude plugin validate .` for the marketplace.
+- `.claude-plugin/marketplace.json` makes this repo the marketplace `my-mods`; `~/.claude/settings.json` (`extraKnownMarketplaces`) and `~/.claude/plugins/known_marketplaces.json` point at it.
+- [API-LESSONS.md](API-LESSONS.md): finding things in the mod API reference, what the validator enforces, runtime behaviour.
+- To delete: `~/.claude/dev-mods/e1376fad-a1c1-453c-b3f9-42f459bd8f71/` (old copies, incl. map-reader, turn-pulse, slice-guard; nothing loads it) and the install-time copies in `~/.claude/plugins/cache/my-mods/`.
+
+## Later
+
+- **After live use:** a short failure signature per hindsight snag (so two different `npm test` failures are not one snag); per-repo always-hold paths for triage-gate if the sensitive-path guess is noisy.
+- **Not started:** hindsight recovery hints; focused tests for triage-gate (candidates through code relationships, optionally ranked by Jev, full suite still required); notes selection (only if large optional notes load needlessly).

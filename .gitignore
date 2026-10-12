@@ -1,5 +1,4 @@
 # Written by the engine when it loads a mod
 plugins/*/.claude-plugin/types/
 node_modules/
-docs/mods-assessment.md
-docs/mods-improvement-analysis.md
+docs/
