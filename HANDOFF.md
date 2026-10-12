@@ -1,6 +1,6 @@
 # Mods handoff (2026-10-12)
 
-Three Claude Code mods (function-hook plugins) and one skill plugin, published as the local marketplace `my-mods`. What each does for a user is in [README.md](README.md); mod API lessons are in [API-LESSONS.md](API-LESSONS.md). This file holds state, decisions and open work.
+Four Claude Code mods (function-hook plugins) and one skill plugin, published as the local marketplace `my-mods`. What each does for a user is in [README.md](README.md); mod API lessons are in [API-LESSONS.md](API-LESSONS.md). This file holds state, decisions and open work.
 
 ## Next action
 
@@ -13,6 +13,7 @@ Check model-fit 0.7.0 in a live session: run `/reload-plugins`, grow a conversat
 | `triage-gate` | 0.8.4 | 62 | Partly: 0.1.0 made a real Jev call and held, and a Codex run finished (2026-10-10) |
 | `model-fit` | 0.8.0 | 38 | Partly: band seen in terminal (0.2.0) |
 | `hindsight` | 0.4.0 | 31 | Partly: 0.2.0 recorded snags, proposed a fix and handed off to the retro (2026-10-12) |
+| `toolbelt` | 0.2.0 | 41 | No: tests, tsc and validate only; `/reload-plugins` then `/unused` not yet run live (see docs/toolbelt-rework-plan.md section 9) |
 | `quiz-me` (skill) | 0.3.0 | n/a | No |
 
 - **Committed (2026-10-12):** model-fit 0.8.0 (`c4cd55c`), triage-gate 0.8.3 (`97060e5`), hindsight 0.4.0 (`35af341`); what each version changed is in its commit message.

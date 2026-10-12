@@ -2,12 +2,13 @@
 
 Claude Code plugins for staying an informed developer while an agent writes the code: know what to review before a commit, check you understand what changed, stop the same friction coming back, and avoid paying a big model for small work.
 
-Three are mods (function-hook plugins with a band, pane or gate); one is a skill. Each installs on its own.
+Four are mods (function-hook plugins with a band, pane or gate); one is a skill. Each installs on its own.
 
 | Plugin | Kind | What it does |
 |---|---|---|
 | [triage-gate](plugins/triage-gate) | mod | Judges each `git commit` Claude makes and holds the risky ones for review |
 | [hindsight](plugins/hindsight) | mod | Notices snags that come back across sessions and proposes one fix to the environment |
+| [toolbelt](plugins/toolbelt) | mod | Counts which skills and MCP servers you use and lists the unused ones that cost tokens every turn |
 | [model-fit](plugins/model-fit) | mod | Says when a model or effort was too big or too small for an ask, and when the context got expensive; `/model-fit:baton` writes a handoff note |
 | [quiz-me](plugins/quiz-me) | skill | Asks you one to three "what happens when…" questions on what the session changed |
 
@@ -97,6 +98,22 @@ When a snag comes back in a second session, one model call proposes a fix and it
 After a fix is saved or sent, hindsight counts the sessions in that repo without the snag. Five make the fix **held**. A snag that comes back first reopens as "back after a fix", with its cost then and before, and the next proposal is told what did not hold. Putting a task in the prompt does not run or verify the fix; you send it.
 
 `/hindsight` lists the repo's snags grouped by what happens next (fix proposed, waiting for a 2nd session, fix in progress, fixes that held), each with how often it was seen and what it costs, and puts `/mattpocock-skills:retro` with them and their calls in the prompt box (see Prerequisites).
+
+## toolbelt
+
+Lists the plugins, skills and MCP servers nobody used in 14 days, dearest first, so you can disable or remove them. Change the window with `claude plugin configure toolbelt@my-mods` (7, 14, 30, 60 or 90 days). It does not judge whether a skill is good; it counts use.
+
+Plugins and skills are judged by the usage counters Claude Code keeps in `~/.claude.json` (the ones `/skill-doctor` reads), so the list agrees with Claude Code and `/unused` answers at once; nothing is read from transcripts. Those counters are internal: if they cannot be read the pane says skills are not judged. Nothing there counts MCP use, so Toolbelt counts server calls itself from the first session and lists a server only once that tracking is as old as the window. A server's scope (user, project, local) is read from `.mcp.json` and the same config, and a project or local server is unused per repo.
+
+A plugin is one row, because its skills can only be switched off together; it is listed only if none of its skills was used. A toast says how many are unused and what they cost per turn, at most once a day and only when the list changed. `/unused` opens the pane:
+
+- A plugin: **Disable** runs `claude plugin disable` on its `name@marketplace` id (all its skills go; it stays installed). **Uninstall…** asks again. `anthropic-skills`, which the desktop app syncs from your account, offers Disable only.
+- A user skill: **Disable** moves its folder to `~/.claude/skills-disabled`; **Enable** moves it back.
+- An MCP server: the CLI has no disable, so the button is **Remove** (`claude mcp remove`), which also deletes its env and keys.
+- Each row has a mark and a bar for how many tokens it adds to every prompt; the dearest stand out. The list is paged, 8 to a page. A terminal narrower than 110 columns cannot seat the pane, so `/unused` shows the top 15 as a notice instead.
+- **Keep** mutes an item for good. Items Toolbelt can't change (built-in, claude.ai connectors, plugin-bundled servers) are left off the list.
+
+Every action asks a second time and takes effect in the next session. Actions run the `claude` CLI; no config file is edited by hand.
 
 ## model-fit
 

@@ -1,0 +1,23 @@
+{
+  "name": "toolbelt",
+  "version": "0.2.0",
+  "description": "Lists the plugins, skills and MCP servers you have not used lately and that cost tokens every turn (/unused), judged by Claude Code's own counters, and disables or removes them from a pane.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "unusedDays": {
+      "type": "string",
+      "title": "Days without use",
+      "description": "How long a plugin, skill or MCP server goes unused before /unused lists it. A server is listed only once Toolbelt has counted its calls for this long.",
+      "options": [
+        "7",
+        "14",
+        "30",
+        "60",
+        "90"
+      ],
+      "default": "14",
+      "sensitive": false,
+      "required": false
+    }
+  }
+}
