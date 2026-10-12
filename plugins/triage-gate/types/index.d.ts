@@ -41,7 +41,7 @@ export type Triage = {
   jev: Jev
   isPatchCut: boolean
   assessedAt?: number
-  /** Claude edited a file after this assessment; set by the Edit and Write hooks. */
+  /** The change moved on after this assessment: Claude edited a file, or an approval found it changed. */
   isEdited?: boolean
 }
 

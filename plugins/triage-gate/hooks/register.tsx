@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import type { ChangedFile, Jev, Review, Scope, Subject, Triage } from '../types'
-import { blastOf, countUsers, lineCount, parseNumstat, stemOf } from './blast'
+import { blastOf, countUsers, lineCount, parseNumstat, parseRaw, stemOf } from './blast'
 import { addWrite, emptyTally, guidePrompt, sizeLevel, sizeNote } from './guide'
 import { JEV_URL, PATCH_CHARS, parseJev, requestBody } from './jev'
 import { paneOf } from './pane'
@@ -67,15 +67,46 @@ async function untrackedFiles($: EngineInterface, cwd?: string, within?: string[
 
 type Untracked = Awaited<ReturnType<typeof untrackedFiles>>
 
-async function identityOf($: EngineInterface, untracked: Untracked, cwd?: string) {
-  if (untracked.length === 0) {
-    return ''
+/**
+ * The paths and blobs the commit would take, so a change gets one fingerprint however it was judged: as a working
+ * tree with new files, or after they were staged. Falls back to the diff text when git cannot hash the files.
+ */
+async function fingerprintOf($: EngineInterface, range: string, limit: string[], untracked: Untracked, cwd?: string) {
+  const raw = await git($, ['diff', range, '--raw', '-z', '--no-abbrev', '--no-renames', ...limit], inside(cwd))
+  const [prefix = '', up = ''] = ((await git($, ['rev-parse', '--show-prefix', '--show-cdup'], inside(cwd))) ?? '').split(/\r?\n/)
+  const changed = [
+    ...parseRaw(raw ?? '').map(({ path, blob }) => ({ path, from: `${up}${path}`, blob })),
+    ...untracked.map(({ file }) => ({ path: `${prefix}${file.path}`, from: file.path, blob: undefined })),
+  ]
+  const unhashed = changed.filter(({ blob }) => blob === undefined).map(({ from }) => from)
+  const hashed =
+    unhashed.length === 0 ? '' : await git($, ['hash-object', '--stdin-paths'], { ...inside(cwd), stdin: unhashed.join('\n') })
+
+  if (raw === undefined || hashed === undefined) {
+    const diff = (await git($, ['diff', range, ...limit], inside(cwd))) ?? ''
+
+    return hexOf([diff, ...untracked.map(({ file, text }) => `${file.path}\n${text}`)].join('\n'))
   }
 
-  const paths = untracked.map(({ file }) => file.path).join('\n')
-  const hashes = await git($, ['hash-object', '--stdin-paths'], { ...inside(cwd), stdin: paths })
+  const blobs = hashed.split(/\r?\n/)
+  let next = 0
+  const lines = changed.map(({ path, blob }) => `${path}\t${blob === undefined ? blobs[next++] : (blob ?? '-')}`)
 
-  return `${paths}\n${hashes ?? untracked.map(({ text }) => text).join('\n')}`
+  return hexOf(lines.sort().join('\n'))
+}
+
+/** The fingerprint of the change `subject` names as it stands now, without judging it; `undefined` when git failed. */
+async function fingerprintNow($: EngineInterface, subject?: Subject) {
+  const scope = subject?.scope ?? 'tree'
+  const { range, limit, paths, numstat } = await changedSince($, scope, subject?.cwd, subject?.paths)
+
+  if (numstat === undefined) {
+    return undefined
+  }
+
+  const untracked = scope === 'tree' ? await untrackedFiles($, subject?.cwd, paths) : []
+
+  return fingerprintOf($, range, limit, untracked, subject?.cwd)
 }
 
 async function usersOf($: EngineInterface, file: ChangedFile, cwd?: string): Promise<ChangedFile> {
@@ -181,7 +212,7 @@ async function runTriage(
   const subject: Subject = { scope, ...(cwd === undefined ? {} : { cwd }), ...(added === undefined ? {} : { paths: added }) }
   const judged: Triage = {
     subject,
-    fingerprint: await hexOf(`${diff}\n${await identityOf($, untracked, cwd)}`),
+    fingerprint: await fingerprintOf($, range, limit, untracked, cwd),
     ...verdictOf(blast, jev),
     blast,
     jev,
@@ -315,6 +346,31 @@ async function noteSize($: EngineInterface) {
   }
 }
 
+/**
+ * Approves the current assessment if the change still matches it, else marks it stale. `drawn` is the fingerprint
+ * the pane showed; a newer assessment since then is left for the user to see first.
+ */
+async function approve($: EngineInterface, drawn?: string) {
+  const judged = await read($, triage)
+
+  if (judged === null || (drawn !== undefined && drawn !== judged.fingerprint)) {
+    return 'missing'
+  }
+
+  const now = await fingerprintNow($, judged.subject)
+
+  if (now !== undefined && now !== judged.fingerprint) {
+    await update($, triage, held => (held?.fingerprint === judged.fingerprint ? { ...held, isEdited: true } : held))
+
+    return 'stale'
+  }
+
+  await update($, approved, list => [...new Set([...list, judged.fingerprint])])
+  await update($, triage, held => (held?.fingerprint === judged.fingerprint ? { ...held, isEdited: false } : held))
+
+  return 'approved'
+}
+
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE })
 
 async function gate($: EngineInterface, options: PluginOptions, command: string, isPosix: boolean) {
@@ -432,15 +488,16 @@ export const register: Register = (on, options) => {
     const asked = e.args.trim()
 
     if (asked === 'approve') {
-      const judged = await read($, triage)
+      const outcome = await approve($)
 
-      if (judged === null) {
-        return { text: 'Nothing has been triaged yet. Run /gate first.' }
+      return {
+        text:
+          outcome === 'missing'
+            ? 'Nothing has been triaged yet. Run /gate first.'
+            : outcome === 'stale'
+              ? 'Not approved: the change has been edited since it was assessed. Run /gate to assess it again.'
+              : 'Approved. Ask Claude to run the commit again; any further edit needs triage again.',
       }
-
-      await update($, approved, list => [...new Set([...list, judged.fingerprint])])
-
-      return { text: 'Approved. Claude can commit this exact change now; any further edit needs triage again.' }
     }
 
     if (asked === 'details') {
@@ -473,7 +530,7 @@ export const register: Register = (on, options) => {
     }
 
     return paneOf($.ui.resolve(e), view, {
-      approve: fingerprint => update($, approved, list => [...new Set([...list, fingerprint])]),
+      approve: fingerprint => approve($, fingerprint),
       toggleDetails: () => update($, details, open => !open),
       triage: () => runTriage($, options, judged?.subject?.scope, judged?.subject?.cwd, judged?.subject?.paths),
       codex: () => runCodex($, options),

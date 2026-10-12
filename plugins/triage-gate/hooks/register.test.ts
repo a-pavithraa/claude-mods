@@ -16,6 +16,7 @@ type World = {
   hashes?: string
   codexExit?: number
   draft?: string
+  stagedRaw?: string
 }
 
 const REVIEW = `The pager can report one page too many.
@@ -29,6 +30,11 @@ Full review comments:
 const USAGE = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
 const SURFACES = ['terminal', 'desktop'] as const
+
+const ZERO = '0'.repeat(40)
+
+const rawOf = (entries: [path: string, blob: string, status: string][]) =>
+  entries.map(([path, blob, status]) => `:100644 100644 ${ZERO} ${blob} ${status}\0${path}\0`).join('')
 
 const noul = (value: number) => ({ type: 'noul', noul: value })
 
@@ -100,6 +106,10 @@ function world(on: On, w: World) {
     if (verb === 'diff' && rest[0] === 'HEAD' && w.hasNoHead === true) return ok('', 128)
     if (verb === 'diff' && rest.includes('--name-only')) return ok(w.staged ?? '')
     if (verb === 'diff' && rest.includes('--numstat')) return ok(w.numstat)
+    if (verb === 'diff' && rest.includes('--raw') && rest[0] === '--cached' && w.stagedRaw !== undefined) return ok(w.stagedRaw)
+    if (verb === 'diff' && rest.includes('--raw')) {
+      return ok(rawOf(w.numstat.split('\n').filter(Boolean).map(line => [line.split('\t')[2] ?? '', ZERO, 'M'])))
+    }
     if (verb === 'diff') return ok('diff --git a/x b/x\n+changed')
     if (verb === 'ls-files') return ok(w.untracked ?? '')
     if (verb === 'hash-object') return ok(w.hashes ?? '')
@@ -494,7 +504,7 @@ test('a plain commit is judged on what is staged, not the whole working tree', a
   await run($, 'git commit -m "change"')
 
   // #then
-  expect(seen.git).toEqual(['diff --cached --numstat', 'diff --cached', 'grep -l -w -F -e pager'])
+  expect(gitReads(seen.git)).toEqual(['diff --cached --numstat', 'diff --cached'])
 })
 
 test('commit -a is judged on tracked changes, without untracked files', async ($, on) => {
@@ -506,7 +516,7 @@ test('commit -a is judged on tracked changes, without untracked files', async ($
   await run($, 'git commit -am "change"')
 
   // #then
-  expect(seen.git).toEqual(['diff HEAD --numstat', 'diff HEAD', 'grep -l -w -F -e pager'])
+  expect(gitReads(seen.git)).toEqual(['diff HEAD --numstat', 'diff HEAD'])
 })
 
 test('a commit that names a file is judged on the working tree, not the index', async ($, on) => {
@@ -521,7 +531,9 @@ test('a commit that names a file is judged on the working tree, not the index', 
   expect(seen.git[0]).toBe('diff HEAD --numstat')
 })
 
-const gitReads = (git: string[]) => git.filter(call => call.startsWith('diff') || call.startsWith('ls-files'))
+/** The reads that pick what is judged; the fingerprint's `--raw` read follows the same range. */
+const gitReads = (git: string[]) =>
+  git.filter(call => (call.startsWith('diff') && !call.includes('--raw')) || call.startsWith('ls-files'))
 
 test('git add of named paths is judged on those paths and what was already staged, not the whole tree', async ($, on) => {
   // #given
@@ -903,7 +915,7 @@ test('an edit by Claude after triage marks the assessment stale in the default v
   const pane = await mountPane($, 'terminal')
 
   // #then
-  expect(await pane.find({ text: /Claude edited files after this assessment\. Refresh it\./ })).toBeDefined()
+  expect(await pane.find({ text: /The change has been edited since this assessment\. Refresh it\./ })).toBeDefined()
 })
 
 test('/gate details gives the signals, files and diagnostics as text, without the key', async ($, on) => {
@@ -995,4 +1007,92 @@ test('an inline pane puts the actions before the reasons and says how to scroll 
 
   // #then
   expect(await pane.find({ text: /use the arrow keys to scroll to Why, Start with and the signals/ })).toBeDefined()
+})
+
+test('approving a hold in the pane says to ask Claude to commit again', async ($, on) => {
+  // #given
+  world(on, { numstat: '900\t0\tsrc/huge.ts\n', key: 'k', jev: { status: 200, answers: RISKY } })
+  await start($)
+  await commit($)
+  const pane = await mountPane($, 'terminal')
+
+  // #when
+  await pane.press({ key: 'approve' })
+
+  // #then
+  expect(await pane.find({ text: /Approved\. Ask Claude to run the commit again\./ })).toBeDefined()
+})
+
+test('a stale hold offers Refresh assessment instead of Approve', async ($, on) => {
+  // #given
+  world(on, { numstat: '900\t0\tsrc/huge.ts\n', key: 'k', jev: { status: 200, answers: RISKY } })
+  await start($)
+  await commit($)
+
+  // #when
+  await write($, '/work/src/huge.ts', 3)
+  const pane = await mountPane($, 'terminal')
+
+  // #then
+  expect([await pane.find({ key: 'approve' }), (await pane.find({ key: 'rerun' })) !== undefined]).toEqual([undefined, true])
+})
+
+test('approving in the pane after the change moved on approves nothing and marks the assessment stale', async ($, on) => {
+  // #given a hold, then an edit Claude did not make
+  const w = { numstat: '900\t0\tsrc/huge.ts\n', key: 'k', jev: { status: 200, answers: RISKY }, hashes: 'aaa' }
+  world(on, w)
+  await start($)
+  await commit($)
+  const pane = await mountPane($, 'terminal')
+  w.hashes = 'bbb'
+
+  // #when
+  await pane.press({ key: 'approve' })
+
+  // #then
+  expect([
+    (await pane.find({ text: /edited since this assessment/ })) !== undefined,
+    (await commit($)).deny?.includes('held this commit'),
+  ]).toEqual([true, true])
+})
+
+test('/gate approve refuses an assessment the change has moved on from', async ($, on) => {
+  // #given
+  const w = { numstat: '900\t0\tsrc/huge.ts\n', key: 'k', jev: { status: 200, answers: RISKY }, hashes: 'aaa' }
+  world(on, w)
+  await start($)
+  await commit($)
+  w.hashes = 'bbb'
+
+  // #when
+  const said = (await triage($, 'approve')).text ?? ''
+
+  // #then
+  expect(said).toContain('Not approved')
+})
+
+test('an approval of the working tree with a new file still holds once that file is staged', async ($, on) => {
+  // #given the tree judged with notes.md untracked, then approved
+  const w = {
+    numstat: '900\t0\tsrc/huge.ts\n',
+    key: 'k',
+    jev: { status: 200, answers: RISKY },
+    untracked: 'notes.md',
+    hashes: 'h1\nh2',
+    stagedRaw: rawOf([
+      ['src/huge.ts', 'h1', 'M'],
+      ['notes.md', 'h2', 'A'],
+    ]),
+  }
+  world(on, w)
+  await start($)
+  await commit($)
+  await triage($, 'approve')
+
+  // #when the same content is committed from the index
+  w.numstat = '900\t0\tsrc/huge.ts\n1\t0\tnotes.md\n'
+  const ran = await run($, 'git commit -m "change"')
+
+  // #then
+  expect(ran.deny).toBeUndefined()
 })

@@ -155,6 +155,7 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
   }
 
   const badge = BADGE[judged.verdict]
+  const isOutdated = judged.isEdited === true
   const { jev } = judged
   const isWhole = jev.status === 'judged' && !judged.isPatchCut
   const heading = (text: string) => (
@@ -199,14 +200,19 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
       <Text color={isWhole ? undefined : 'warning'} dimColor={isWhole} wrap="wrap">
         {coverageOf(judged)}
       </Text>
-      {judged.isEdited === true && (
+      {isOutdated && (
         <Text color="warning" wrap="wrap">
-          ▲ Claude edited files after this assessment. Refresh it.
+          ▲ The change has been edited since this assessment. Refresh it.
+        </Text>
+      )}
+      {judged.verdict === 'hold' && isApproved && !isOutdated && (
+        <Text color="success" wrap="wrap">
+          Approved. Ask Claude to run the commit again.
         </Text>
       )}
 
       <Box marginTop={1} gap={1} flexWrap="wrap">
-        {judged.verdict === 'hold' && !isApproved && (
+        {judged.verdict === 'hold' && !isApproved && !isOutdated && (
           <Button
             key="approve"
             label="Approve commit"
@@ -223,7 +229,12 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
             }
           }}
         />
-        <Button key="rerun" label="Refresh assessment" onPress={async () => void (await act.triage())} />
+        <Button
+          key="rerun"
+          label="Refresh assessment"
+          {...(isOutdated ? { variant: 'primary' as const } : {})}
+          onPress={async () => void (await act.triage())}
+        />
       </Box>
       {view.isScrollHinted && (
         <Text dimColor wrap="wrap">

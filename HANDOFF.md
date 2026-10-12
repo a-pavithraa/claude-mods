@@ -10,13 +10,13 @@ Check model-fit 0.7.0 in a live session: run `/reload-plugins`, grow a conversat
 
 | Plugin | Version | Tests | Verified live? |
 |---|---|---|---|
-| `triage-gate` | 0.8.3 | 57 | Partly: 0.1.0 made a real Jev call and held, and a Codex run finished (2026-10-10) |
+| `triage-gate` | 0.8.4 | 62 | Partly: 0.1.0 made a real Jev call and held, and a Codex run finished (2026-10-10) |
 | `model-fit` | 0.8.0 | 38 | Partly: band seen in terminal (0.2.0) |
 | `hindsight` | 0.4.0 | 31 | Partly: 0.2.0 recorded snags, proposed a fix and handed off to the retro (2026-10-12) |
 | `quiz-me` (skill) | 0.3.0 | n/a | No |
 
 - **Committed (2026-10-12):** model-fit 0.8.0 (`c4cd55c`), triage-gate 0.8.3 (`97060e5`), hindsight 0.4.0 (`35af341`); what each version changed is in its commit message.
-- **Gate follow-up:** **Approve commit** gives no feedback, and stays clickable on a stale assessment. Show "Approved. Ask Claude to run the commit again.", and offer Refresh assessment instead of Approve when the assessment is stale.
+- **Gate follow-up (0.8.4, uncommitted):** approving a hold says "Approved. Ask Claude to run the commit again."; a stale assessment offers Refresh assessment instead of Approve. Approving (pane or `/gate approve`) re-fingerprints the change first and refuses when it moved on; the pane approves only the assessment it drew. The fingerprint is now the paths and blobs the commit would take (`git diff --raw` plus `hash-object`), so an approval carries over from the tree with new files to the same change staged. To verify live: approve in the pane, then let Claude commit; approve, stage with `git add -A`, then a plain commit.
 - **Assumed, to verify live:**
   - triage-gate: a real commit with the key set; the 0.8.0 pane on desktop and narrow terminals; the streamed Codex review, timeout and size alert; `/guide`; whether Codex prints progress on stderr (the running box relies on it).
   - model-fit: the verdict line; that the advice shows after a simple turn and `/model haiku` lands in the prompt box; Jev shadow against the real API (the `score` probability keys are assumed "0".."2"); whether the detected cache lifetime matches `claude -p "hello" --output-format json` (`usage.cache_creation`); that `turn.step` reports full model ids so the 5.5 effort rule matches; whether a desktop survey is why the 2+2 advice vanished (`claude --debug`); 0.7.0: that `/model-fit:baton` is found without a `skills` entry in the manifest, and how the three context buttons wrap in a narrow terminal.

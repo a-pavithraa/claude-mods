@@ -33,6 +33,31 @@ export function parseNumstat(numstat: string): ChangedFile[] {
     })
 }
 
+const UNHASHED = /^0+$/
+
+/**
+ * Each path of `git diff --raw -z --no-abbrev --no-renames` with the blob it will commit: `null` when deleted,
+ * `undefined` when git left it unhashed because it lives in the working tree.
+ */
+export function parseRaw(raw: string): { path: string; blob: string | null | undefined }[] {
+  const parts = raw.split('\0')
+  const entries: { path: string; blob: string | null | undefined }[] = []
+
+  for (let at = 0; at + 1 < parts.length; at += 2) {
+    const meta = parts[at] ?? ''
+    const path = parts[at + 1] ?? ''
+
+    if (!meta.startsWith(':')) {
+      break
+    }
+
+    const [, , , blob = '', status = ''] = meta.slice(1).split(' ')
+    entries.push({ path, blob: status.startsWith('D') ? null : UNHASHED.test(blob) ? undefined : blob })
+  }
+
+  return entries
+}
+
 export function stemOf(path: string): string | undefined {
   const name = path.split('/').pop() ?? path
   const stem = name.replace(/\.[^.]+$/, '')

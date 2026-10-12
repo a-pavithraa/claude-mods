@@ -1,6 +1,6 @@
 ﻿{
   "name": "triage-gate",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Flags a turn that wrote a lot and offers a /guide reading order; before Claude commits, measures the change's blast radius and asks Jev about risk and readability, then lets it through, flags it, or holds it for review.",
   "types": "./types/index.d.ts",
   "userConfig": {
