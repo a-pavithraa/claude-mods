@@ -9,8 +9,9 @@ import {
   barText,
   countUse,
   dayText,
+  duplicateUnits,
   daysOf,
-  installedIds,
+  installsOf,
   normalPath,
   projectServers,
   readCounters,
@@ -18,7 +19,9 @@ import {
   signature,
   skillUse,
   skillsText,
+  switchedOff,
   tierOf,
+  toastText,
   unusedUnits,
   withIds,
 } from './usage'
@@ -95,7 +98,12 @@ function world(on: On, w: World = {}) {
       { name: 'superpowers:writing-plans', description: 'Plan multi-step work before touching code.', source: 'plugin', plugin: 'superpowers' },
       { name: 'superpowers:brainstorming', description: 'Explore intent before building.', source: 'plugin', plugin: 'superpowers' },
       { name: 'unused', description: 'A mod command.', source: 'plugin', plugin: 'toolbelt' },
-      ...(w.hasSynced === true ? [{ name: 'anthropic-skills:docx', description: 'Word documents.', source: 'plugin' as const, plugin: 'anthropic-skills' }] : []),
+      ...(w.hasSynced === true
+        ? [
+            { name: 'docx', description: 'Word documents.', source: 'user' as const },
+            { name: 'anthropic-skills:skill-creator', description: 'Make a skill.', source: 'user' as const },
+          ]
+        : []),
       ...(w.hasGrill === true ? [{ name: 'build-compass:grill-page', description: 'Grill through a page.', source: 'plugin' as const, plugin: 'build-compass' }] : []),
       ...Array.from({ length: w.extraSkills ?? 0 }, (_, at) => ({ name: `extra-${at}`, description: 'Another skill.', source: 'user' as const })),
       { name: 'compact', description: 'Compact the conversation.', source: 'builtin' },
@@ -110,7 +118,21 @@ function world(on: On, w: World = {}) {
     ],
   }))
   on('tool.describe', ($, e) => ({ description: e.description }))
-  on('fs.exists', ($, e) => ({ value: slashed(e.path).includes('/.claude/skills/') || slashed(e.path).endsWith('/.claude/skills-disabled') }))
+  on('fs.exists', ($, e) => {
+    const path = slashed(e.path)
+    const isSynced = path.endsWith('/skills/docx') || path.endsWith('/skills/anthropic-skills:skill-creator')
+
+    return { value: (path.includes('/.claude/skills/') && !isSynced) || path.endsWith('/.claude/skills-disabled') }
+  })
+  on('fs.list', ($, e) => {
+    const path = slashed(e.path ?? '')
+    const dir = (name: string) => ({ name, kind: 'dir' as const, size: 0, mtimeMs: NOW, isLink: false })
+
+    if (path.endsWith('/skills/synced')) return { value: [dir('account-1')] }
+    if (path.endsWith('/skills/synced/account-1')) return { value: [dir('docx'), dir('skill-creator')] }
+
+    return { value: [] }
+  })
   on('fs.read', ($, e) => {
     const path = slashed(e.path)
 
@@ -165,7 +187,7 @@ const skill = (name: string, plugin: string | undefined, cost: number, scope: It
 
 const server = (name: string, scope: Item['scope'], cost: number): Item => ({ kind: 'mcp', name, scope, cost })
 
-const counters = (skills: Record<string, number>) => readCounters(configOf({ skills }))
+const counters = (skills: Record<string, number>) => readCounters(configOf({ skills, user: [] }))
 
 test('a config that is not JSON, or has no skill counters, reads as nothing, and one bad entry does not spoil the rest', () => {
   expect(readCounters('{"skillUsage": broken')).toBeUndefined()
@@ -227,12 +249,12 @@ test('a mod\'s own command is not listed', async ($, on) => {
 })
 
 test('a plugin takes the id its one install has, a synced plugin its synced id, and one installed twice or not at all takes none', () => {
-  const installed = installedIds(JSON.stringify({ plugins: { 'p@market': [{}], 'twice@old': [{}], 'twice@new': [{}] } }))
+  const installed = installsOf(JSON.stringify({ plugins: { 'p@market': [{}], 'twice@old': [{}], 'twice@new': [{}] } }))
   const unit = (name: string) => ({ kind: 'plugin' as const, name, scope: 'plugin' as const, cost: 1, skills: [], uses: 0 })
   const ids = withIds([unit('p'), unit('anthropic-skills'), unit('twice'), unit('stray')], installed).map(one => one.id)
 
   expect(ids).toEqual(['p@market', 'anthropic-skills@synced', undefined, undefined])
-  expect(installedIds('not json')).toEqual({})
+  expect(installsOf('not json')).toEqual({})
 })
 
 test('a synced plugin is disabled and enabled by its synced id, and offers no Uninstall', async ($, on) => {
@@ -242,6 +264,8 @@ test('a synced plugin is disabled and enabled by its synced id, and offers no Un
   const shown = await pane($)
 
   expect(await shown.find({ key: 'remove:plugin:anthropic-skills' })).toBeUndefined()
+  expect(await shown.find({ text: 'skill-creator, docx' })).toBeDefined()
+  expect(await shown.find({ key: 'disable:skill:docx' })).toBeUndefined()
 
   await shown.press({ key: 'disable:plugin:anthropic-skills' })
   await shown.press({ key: 'yes:plugin:anthropic-skills' })
@@ -291,8 +315,56 @@ test('when the config cannot be read, servers are still listed and the pane says
   expect(await shown.find({ text: /Can't read Claude Code's usage counters/ })).toBeDefined()
   expect(await shown.find({ text: 'superpowers' })).toBeUndefined()
   expect(await shown.find({ text: 'plugin-authoring' })).toBeUndefined()
-  expect(await shown.find({ text: 'MCP SERVERS · 1' })).toBeDefined()
+  expect(await shown.find({ text: 'MCP SERVERS · 2' })).toBeDefined()
   expect(await shown.find({ text: 'exa' })).toBeDefined()
+  expect(await shown.find({ key: 'remove:mcp:chrome' })).toBeUndefined()
+})
+
+test('a server Toolbelt cannot remove is still listed, with where to switch it off and only Keep', async ($, on) => {
+  const { clock } = world(on, { config: configOf({ user: ['exa'] }) })
+  await start($)
+  await clock.settle()
+  const shown = await pane($)
+
+  expect(await shown.find({ text: /not in your config · no calls since/ })).toBeDefined()
+  expect(await shown.find({ text: 'Managed by the app that added it.' })).toBeDefined()
+  expect(await shown.find({ key: 'remove:mcp:chrome' })).toBeUndefined()
+  expect(await shown.find({ key: 'keep:mcp:chrome' })).toBeDefined()
+})
+
+test('a configured server that gave the session no tools is listed as not connected, used or not, unless it is switched off for the repo', () => {
+  const config = (disabled: string[]) =>
+    readCounters(
+      JSON.stringify({
+        skillUsage: {},
+        mcpServers: { idea: {}, exa: {} },
+        projects: { '/work': { mcpServers: { db: {} }, disabledMcpServers: disabled } },
+      }),
+    )
+  const items = [server('exa', 'user', 10)]
+  const uses = countUse({}, 'mcp:idea', '/work', NOW - DAY_MS)
+  const down = (disabled: string[]) =>
+    unusedUnits(items, config(disabled), uses, { ...WIN, listed: ['files'] })
+      .filter(unit => unit.isDown === true)
+      .map(unit => [unit.name, unit.scope, unit.lastAt])
+
+  expect(down([])).toEqual([
+    ['db', 'local', undefined],
+    ['files', 'project', undefined],
+    ['idea', 'user', NOW - DAY_MS],
+  ])
+  expect(down(['idea', 'db'])).toEqual([['files', 'project', undefined]])
+})
+
+test('a server that looks down at startup is left out of the toast, and /unused lists it with Remove', async ($, on) => {
+  const { seen, clock } = world(on, { config: configOf({ skills: { 'superpowers:brainstorming': NOW }, user: ['exa', 'chrome', 'idea'] }), extraSkills: 0 })
+  await start($)
+  await clock.settle()
+  const shown = await pane($)
+
+  expect(seen.toasts.join(' ')).not.toMatch(/3 servers/)
+  expect(await shown.find({ text: /user · not connected in this session/ })).toBeDefined()
+  expect(await shown.find({ key: 'remove:mcp:idea' })).toBeDefined()
 })
 
 test('a server is not listed before tracking is as old as the window; a plugin is', () => {
@@ -668,4 +740,87 @@ test('with the window set to 30 days, a plugin used 20 days ago is not listed', 
 
   expect(await shown.find({ key: 'disable:plugin:superpowers' })).toBeUndefined()
   expect(await shown.find({ text: 'unused 30 days' })).toBeDefined()
+})
+const TWICE = JSON.stringify({
+  plugins: {
+    'superpowers@old-market': [{ version: '6.1.1', lastUpdated: '2026-07-15T03:00:08.558Z' }],
+    'superpowers@official': [{ version: '6.4.1', lastUpdated: '2026-09-23T04:05:29.364Z' }],
+    'solo@official': [{ version: '1.0.0', lastUpdated: '2026-09-01T00:00:00.000Z' }],
+  },
+})
+
+test('a plugin installed from two marketplaces is one duplicate: the copy updated longest ago, costing what its skills add a second time', () => {
+  const items = [skill('superpowers:plans', 'superpowers', 100), skill('superpowers:plans', 'superpowers', 100), skill('solo:one', 'solo', 50)]
+
+  expect(duplicateUnits(items, installsOf(TWICE), [], [])).toEqual([
+    {
+      kind: 'duplicate',
+      name: 'superpowers',
+      id: 'superpowers@old-market',
+      scope: 'plugin',
+      cost: 100,
+      skills: [],
+      uses: 0,
+      detail: '6.1.1 from old-market · 6.4.1 from official is newer',
+    },
+  ])
+})
+
+test('a copy the settings switch off is not a duplicate, and neither is a kept one', () => {
+  const off = switchedOff({ enabledPlugins: { 'superpowers@old-market': false, 'solo@official': true } })
+
+  expect(off).toEqual(['superpowers@old-market'])
+  expect(duplicateUnits([], installsOf(TWICE), off, [])).toEqual([])
+  expect(duplicateUnits([], installsOf(TWICE), [], ['duplicate:superpowers'])).toEqual([])
+  expect(switchedOff({})).toEqual([])
+})
+
+test('a user skill a plugin also carries is a duplicate of your copy, and is not listed again as an unused skill', () => {
+  const items = [skill('skill-creator', undefined, 80), skill('anthropic-skills:skill-creator', 'anthropic-skills', 120), skill('drawio', undefined, 40)]
+  const units = unusedUnits(items, counters({ 'anthropic-skills:skill-creator': NOW - DAY_MS }), {}, WIN)
+
+  expect(units.map(unit => [unit.kind, unit.name, unit.detail])).toEqual([
+    ['duplicate', 'skill-creator', 'your copy · anthropic-skills has one too'],
+    ['skill', 'drawio', undefined],
+  ])
+})
+
+test('a duplicate user skill you chose to keep stays hidden, not listed as an unused skill instead', () => {
+  const items = [skill('skill-creator', undefined, 80), skill('anthropic-skills:skill-creator', 'anthropic-skills', 120)]
+  const units = unusedUnits(items, counters({ 'anthropic-skills:skill-creator': NOW - DAY_MS }), {}, { ...WIN, muted: ['duplicate:skill-creator'] })
+
+  expect(units).toEqual([])
+})
+
+test('an unused plugin loaded twice costs one copy in its row, since the duplicate row counts the spare', () => {
+  const items = [skill('superpowers:plans', 'superpowers', 100), skill('superpowers:plans', 'superpowers', 100)]
+  const units = unusedUnits(items, counters({}), {}, { ...WIN, installs: installsOf(TWICE) })
+
+  expect(units.map(unit => [unit.kind, unit.cost])).toEqual([
+    ['duplicate', 100],
+    ['plugin', 100],
+  ])
+})
+
+test('the toast counts what is loaded twice apart from what is unused', () => {
+  const twice = duplicateUnits([], installsOf(TWICE), [], [])
+  const unused = unusedUnits([skill('drawio', undefined, 40)], counters({}), {}, WIN)
+
+  expect(toastText([...twice, ...unused], 14)).toBe('toolbelt: 1 loaded twice; 1 skill unused 14 days, ~10 tokens each turn. /unused to review.')
+  expect(toastText(twice, 14)).toBe('toolbelt: 1 loaded twice, ~0 tokens each turn. /unused to review.')
+})
+
+test('the spare copy of a plugin is disabled by its own id, under a heading of its own', async ($, on) => {
+  const { seen, clock } = world(on, { installed: TWICE })
+  await start($)
+  await clock.settle()
+  const shown = await pane($)
+
+  expect(await shown.find({ text: 'LOADED TWICE · 1' })).toBeDefined()
+  expect(await shown.find({ text: /6\.1\.1 from old-market/ })).toBeDefined()
+
+  await shown.press({ key: 'disable:duplicate:superpowers' })
+  await shown.press({ key: 'yes:duplicate:superpowers' })
+
+  expect(seen.ran).toContain('cmd.exe /d /c claude plugin disable superpowers@old-market')
 })

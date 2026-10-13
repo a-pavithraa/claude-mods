@@ -16,13 +16,13 @@ export type Item = {
 export type Use = { count: number; lastAt: number; byProject?: Record<string, number> }
 export type Uses = Record<string, Use>
 
-export type UnitKind = 'plugin' | 'skill' | 'mcp'
+export type UnitKind = 'duplicate' | 'plugin' | 'skill' | 'mcp'
 
-/** One thing the person can switch off in one step: a plugin with all its skills, a user skill, or a server. */
+/** One thing the person can switch off in one step: a plugin with all its skills, a user skill, a server, or the spare copy of something loaded twice. */
 export type Unit = {
   kind: UnitKind
   name: string
-  /** For a plugin: the `name@marketplace` the CLI acts on, absent when two installs share the name. */
+  /** The `name@marketplace` the CLI acts on: a plugin's, absent when two installs share the name; a duplicate's, the copy to drop. */
   id?: string
   scope: Scope
   /** Characters added to each prompt; for a plugin, the sum over its skills. */
@@ -31,6 +31,10 @@ export type Unit = {
   skills: string[]
   uses: number
   lastAt?: number
+  /** For a duplicate: which copy this is and where the other one lives. */
+  detail?: string
+  /** For a server: the config names it but it gave this session no tools. */
+  isDown?: boolean
 }
 
 /** What Toolbelt itself switched off, so the pane can offer the way back. */

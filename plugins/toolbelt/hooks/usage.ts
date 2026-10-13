@@ -54,6 +54,8 @@ export type Counters = {
   userServers: string[]
   /** Local-scope servers by normalised project path. */
   localServers: Record<string, string[]>
+  /** Servers the person switched off in a project, by normalised project path. */
+  disabledServers: Record<string, string[]>
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
@@ -87,15 +89,19 @@ export function readCounters(text: string): Counters | undefined {
   }
 
   const localServers: Counters['localServers'] = {}
+  const disabledServers: Counters['disabledServers'] = {}
 
   for (const [path, project] of Object.entries(asRecord(config.projects) ?? {})) {
-    const names = Object.keys(asRecord(asRecord(project)?.mcpServers) ?? {})
+    const entry = asRecord(project)
+    const names = Object.keys(asRecord(entry?.mcpServers) ?? {})
+    const off = [entry?.disabledMcpServers, entry?.disabledMcpjsonServers].flatMap(list => (Array.isArray(list) ? list.filter((name): name is string => typeof name === 'string') : []))
     const place = normalPath(path)
 
     if (names.length > 0) localServers[place] = [...(localServers[place] ?? []), ...names]
+    if (off.length > 0) disabledServers[place] = [...(disabledServers[place] ?? []), ...off]
   }
 
-  return { skills, userServers: Object.keys(asRecord(config.mcpServers) ?? {}), localServers }
+  return { skills, userServers: Object.keys(asRecord(config.mcpServers) ?? {}), localServers, disabledServers }
 }
 
 /** The servers a repo's `.mcp.json` lists; none when the text is not that file. */
@@ -107,8 +113,12 @@ export function projectServers(text: string): string[] {
   }
 }
 
-/** Plugin ids (`name@marketplace`) by plugin name, from the CLI's install record; none when the text is not that record. */
-export function installedIds(text: string): Record<string, string[]> {
+/** One install of a plugin: its `name@marketplace` id, and what the record says of its version and last update. */
+export type Install = { id: string; version: string; updatedAt: number }
+export type Installs = Record<string, Install[]>
+
+/** Installs by plugin name, from the CLI's install record; none when the text is not that record. */
+export function installsOf(text: string): Installs {
   let parsed: unknown
 
   try {
@@ -117,30 +127,91 @@ export function installedIds(text: string): Record<string, string[]> {
     return {}
   }
 
-  const ids: Record<string, string[]> = {}
+  const installs: Installs = {}
 
-  for (const id of Object.keys(asRecord(asRecord(parsed)?.plugins) ?? {})) {
+  for (const [id, entries] of Object.entries(asRecord(asRecord(parsed)?.plugins) ?? {})) {
     const name = id.slice(0, id.lastIndexOf('@'))
+    const entry = asRecord(Array.isArray(entries) ? entries[0] : entries)
+    const updatedAt = Date.parse(typeof entry?.lastUpdated === 'string' ? entry.lastUpdated : '')
 
-    if (name !== '') ids[name] = [...(own(ids, name) ?? []), id]
+    if (name === '') continue
+
+    installs[name] = [
+      ...(own(installs, name) ?? []),
+      { id, version: typeof entry?.version === 'string' ? entry.version : '', updatedAt: Number.isNaN(updatedAt) ? 0 : updatedAt },
+    ]
   }
 
-  return ids
+  return installs
 }
 
-/** The desktop app syncs these from the account instead of installing them, so the install record does not name them. */
-const SYNCED_IDS: Record<string, string> = { 'anthropic-skills': 'anthropic-skills@synced' }
+/** The plugin ids the settings switch off (`enabledPlugins` set to false). */
+export const switchedOff = (settings: Record<string, unknown>) =>
+  Object.entries(asRecord(settings.enabledPlugins) ?? {}).flatMap(([id, isOn]) => (isOn === false ? [id] : []))
+
+const marketOf = (id: string) => id.slice(id.lastIndexOf('@') + 1)
+
+const labelOf = (install: Install) => `${install.version === '' ? '' : `${install.version} `}from ${marketOf(install.id)}`
+
+/**
+ * What is loaded twice, whether or not it is used: a plugin installed from two marketplaces, of which the copy updated
+ * longest ago is the one to drop, and a user skill whose name a plugin's skill also carries.
+ */
+export function duplicateUnits(items: Item[], installs: Installs, off: string[], muted: string[]): Unit[] {
+  const units: Unit[] = []
+
+  for (const [name, all] of Object.entries(installs)) {
+    const live = all.filter(install => !off.includes(install.id)).sort((a, b) => a.updatedAt - b.updatedAt || a.id.localeCompare(b.id))
+    const [stale, ...kept] = live
+    const newest = kept.at(-1)
+
+    if (stale === undefined || newest === undefined) continue
+
+    const seen = new Set<string>()
+    const repeated = items.filter(item => item.plugin === name && (seen.has(item.name) || !seen.add(item.name)))
+
+    units.push({
+      kind: 'duplicate',
+      name,
+      id: stale.id,
+      scope: 'plugin',
+      cost: repeated.reduce((sum, item) => sum + item.cost, 0),
+      skills: [],
+      uses: 0,
+      detail: `${labelOf(stale)} · ${labelOf(newest)} is newer`,
+    })
+  }
+
+  for (const item of items) {
+    if (item.kind !== 'skill' || item.scope !== 'user') continue
+
+    const twin = items.find(other => other.kind === 'skill' && other.plugin !== undefined && other.name.endsWith(`:${item.name}`))
+
+    if (twin?.plugin !== undefined) {
+      units.push({ kind: 'duplicate', name: item.name, scope: 'user', cost: item.cost, skills: [], uses: 0, detail: `your copy · ${twin.plugin} has one too` })
+    }
+  }
+
+  return units.filter(unit => !muted.includes(keyOf('duplicate', unit.name)))
+}
+
+/** The desktop app syncs this plugin's skills from the account into `~/.claude/skills/synced`: the install record does not name it, and its skills are listed as bare user commands. */
+export const SYNCED_PLUGIN = 'anthropic-skills'
+const SYNCED_IDS: Record<string, string> = { [SYNCED_PLUGIN]: `${SYNCED_PLUGIN}@synced` }
+
+/** A synced skill is listed as `docx`, or `anthropic-skills:docx` when a user skill already has the bare name. */
+export const syncedBare = (name: string) => (name.startsWith(`${SYNCED_PLUGIN}:`) ? name.slice(SYNCED_PLUGIN.length + 1) : name)
 
 /** A synced plugin can be switched off but not uninstalled: the app brings it back. */
 export const isSynced = (id: string | undefined) => id?.endsWith('@synced') === true
 
 /** Each plugin unit with the id the CLI takes: a bare name is refused for a synced plugin and is ambiguous between two installs. */
-export const withIds = (units: Unit[], installed: Record<string, string[]>): Unit[] =>
+export const withIds = (units: Unit[], installs: Installs): Unit[] =>
   units.map(unit => {
     if (unit.kind !== 'plugin') return unit
 
-    const ids = own(installed, unit.name) ?? []
-    const id = ids.length === 1 ? ids[0] : ids.length === 0 ? own(SYNCED_IDS, unit.name) : undefined
+    const all = own(installs, unit.name) ?? []
+    const id = all.length === 1 ? all[0]?.id : all.length === 0 ? own(SYNCED_IDS, unit.name) : undefined
 
     return id === undefined ? unit : { ...unit, id }
   })
@@ -168,11 +239,24 @@ export function skillUse(counters: Counters, name: string, loaded: string[]): { 
   return sharing.length === 1 ? own(counters.skills, bare) : undefined
 }
 
-export type View = { project: string; now: number; since: number; days: number; muted: string[] }
+export type View = {
+  project: string
+  now: number
+  since: number
+  days: number
+  muted: string[]
+  installs?: Installs
+  off?: string[]
+  /** The servers the repo's `.mcp.json` lists. */
+  listed?: string[]
+}
 
 const dearestFirst = (a: Unit, b: Unit) => b.cost - a.cost || a.name.localeCompare(b.name)
 
-function pluginUnits(items: Item[], counters: Counters, view: View, cutoff: number): Unit[] {
+const onePerName = (skills: Item[]) => skills.filter((skill, at) => skills.findIndex(other => other.name === skill.name) === at)
+
+/** A plugin loaded twice is costed once here: the duplicate row already counts the spare copy. */
+function pluginUnits(items: Item[], counters: Counters, view: View, cutoff: number, twice: Unit[]): Unit[] {
   const loaded = items.filter(item => item.kind === 'skill').map(item => item.name)
   const byPlugin = new Map<string, Item[]>()
 
@@ -193,8 +277,8 @@ function pluginUnits(items: Item[], counters: Counters, view: View, cutoff: numb
         kind: 'plugin',
         name,
         scope: 'plugin',
-        cost: skills.reduce((sum, skill) => sum + skill.cost, 0),
-        skills: [...skills].sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name)).map(skill => skill.name),
+        cost: (twice.some(unit => unit.scope === 'plugin' && unit.name === name) ? onePerName(skills) : skills).reduce((sum, skill) => sum + skill.cost, 0),
+        skills: [...new Set([...skills].sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name)).map(skill => skill.name))],
         uses: used.reduce((sum, one) => sum + one.count, 0),
         ...(lastAt === undefined ? {} : { lastAt }),
       },
@@ -202,11 +286,13 @@ function pluginUnits(items: Item[], counters: Counters, view: View, cutoff: numb
   })
 }
 
-function skillUnits(items: Item[], counters: Counters, view: View, cutoff: number): Unit[] {
+function skillUnits(items: Item[], counters: Counters, view: View, cutoff: number, twice: Unit[]): Unit[] {
   const loaded = items.filter(item => item.kind === 'skill').map(item => item.name)
 
   return items.flatMap((item): Unit[] => {
-    if (item.kind !== 'skill' || item.scope !== 'user') return []
+    const isTwice = twice.some(unit => unit.scope === 'user' && unit.name === item.name) || view.muted.includes(keyOf('duplicate', item.name))
+
+    if (item.kind !== 'skill' || item.scope !== 'user' || isTwice) return []
 
     const use = skillUse(counters, item.name, loaded)
 
@@ -231,7 +317,32 @@ function serverUnits(items: Item[], uses: Uses, view: View, cutoff: number): Uni
 }
 
 /**
- * Plugins, user skills and servers nobody used for `days`, each group dearest first.
+ * Servers the config names that gave this session no tools, used or not: one that fails to start costs nothing per turn
+ * but is dead weight in the config. A server the person switched off for the repo is left out.
+ */
+function downUnits(items: Item[], counters: Counters, uses: Uses, view: View): Unit[] {
+  const repo = normalPath(view.project)
+  const connected = items.flatMap(item => (item.kind === 'mcp' ? [item.name] : []))
+  const off = own(counters.disabledServers, repo) ?? []
+  const configured = new Map<string, Item['scope']>()
+
+  for (const [scope, names] of [['project', view.listed ?? []], ['local', own(counters.localServers, repo) ?? []], ['user', counters.userServers]] as const) {
+    for (const name of names) if (!configured.has(name)) configured.set(name, scope)
+  }
+
+  return [...configured].flatMap(([name, scope]): Unit[] => {
+    const key = keyOf('mcp', name)
+
+    if (connected.includes(name) || off.includes(name) || view.muted.includes(key)) return []
+
+    const use = uses[key]
+
+    return [{ kind: 'mcp', name, scope, cost: 0, skills: [], uses: use?.count ?? 0, ...(use === undefined ? {} : { lastAt: use.lastAt }), isDown: true }]
+  })
+}
+
+/**
+ * What is loaded twice, then the plugins, user skills and servers nobody used for `days`, each group dearest first.
  * Skills are judged by Claude Code's own counters and need no waiting; a server is judged by Toolbelt's tally,
  * so nothing counts as unused before that tracking is `days` old. Without counters skills are not judged.
  */
@@ -239,9 +350,13 @@ export function unusedUnits(items: Item[], counters: Counters | undefined, uses:
   const cutoff = view.now - view.days * DAY_MS
   const isWaiting = view.now - view.since < view.days * DAY_MS
 
+  const twice = duplicateUnits(items, view.installs ?? {}, view.off ?? [], view.muted).sort(dearestFirst)
+
   return [
-    ...(counters === undefined ? [] : [...pluginUnits(items, counters, view, cutoff).sort(dearestFirst), ...skillUnits(items, counters, view, cutoff).sort(dearestFirst)]),
+    ...twice,
+    ...(counters === undefined ? [] : [...pluginUnits(items, counters, view, cutoff, twice).sort(dearestFirst), ...skillUnits(items, counters, view, cutoff, twice).sort(dearestFirst)]),
     ...(isWaiting ? [] : serverUnits(items, uses, view, cutoff).sort(dearestFirst)),
+    ...(counters === undefined ? [] : downUnits(items, counters, uses, view).sort(dearestFirst)),
   ]
 }
 
@@ -287,7 +402,7 @@ export function dayText(at: number) {
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
-export const KINDS = ['plugin', 'skill', 'mcp'] as const
+export const KINDS = ['duplicate', 'plugin', 'skill', 'mcp'] as const
 
 /** `12 plugins`, `2 skills`, `3 servers`; a kind with none is left out. */
 export const countParts = (units: Unit[]) =>
@@ -300,16 +415,18 @@ export const countParts = (units: Unit[]) =>
 export const pluralSkills = (count: number) => plural(count, 'skill')
 
 export function toastText(units: Unit[], days: number) {
-  const parts = countParts(units)
+  const twice = units.filter(unit => unit.kind === 'duplicate').length
+  const parts = countParts(units.filter(unit => unit.kind !== 'duplicate'))
   const counts = parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`
+  const said = [...(twice === 0 ? [] : [`${twice} loaded twice`]), ...(counts === '' ? [] : [`${counts} unused ${days} days`])]
 
-  return `toolbelt: ${counts} unused ${days} days, ~${totalText(units)} tokens each turn. /unused to review.`
+  return `toolbelt: ${said.join('; ')}, ~${totalText(units)} tokens each turn. /unused to review.`
 }
 
 export const TEXT_UNITS = 15
 
 const lineOf = (unit: Unit) => {
-  const detail = unit.kind === 'plugin' ? pluralSkills(unit.skills.length) : unit.scope
+  const detail = unit.kind === 'plugin' ? pluralSkills(unit.skills.length) : (unit.detail ?? unit.scope)
 
   return `${unit.kind} ${unit.name} (${detail}) ~${tokenText(tokensOf(unit.cost))}`
 }

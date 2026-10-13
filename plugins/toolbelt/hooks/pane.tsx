@@ -36,20 +36,30 @@ const SHARE_CELLS = 12
 const UNIT_CELLS = 8
 const SKILLS_SHOWN = 5
 
-const HEADINGS: Record<UnitKind, string> = { plugin: 'PLUGINS', skill: 'SKILLS', mcp: 'MCP SERVERS' }
+const HEADINGS: Record<UnitKind, string> = { duplicate: 'LOADED TWICE', plugin: 'PLUGINS', skill: 'SKILLS', mcp: 'MCP SERVERS' }
 
 const GLYPHS: Record<Tier, string> = { high: '✦', mid: '✦', low: '·' }
 
 /** The priority signal: dear units draw in `warning`, middling ones in `claude`, cheap ones dim. */
 const tintOf = (tier: Tier) => (tier === 'high' ? { color: 'warning' as const } : tier === 'mid' ? { color: 'claude' as const } : { dimColor: true })
 
+/** A server Toolbelt cannot remove: what it is, and where it is switched off instead. */
+const SERVER_NOTES: Partial<Record<Unit['scope'], { what: string; how: string }>> = {
+  builtin: { what: 'claude.ai connector', how: 'Switch it off in the Claude app.' },
+  plugin: { what: 'from a plugin', how: 'Disable the plugin that brings it.' },
+  unknown: { what: 'not in your config', how: 'Managed by the app that added it.' },
+}
+
 function detailOf(unit: Unit, view: PaneView) {
   const lastUsed = unit.lastAt === undefined ? 'never used' : `last used ${agoText(unit.lastAt, view.now)}`
 
+  if (unit.kind === 'duplicate') return unit.detail ?? ''
   if (unit.kind === 'plugin') return `${pluralSkills(unit.skills.length)} · ${lastUsed}`
   if (unit.kind === 'skill') return lastUsed
 
-  return `${unit.scope} · ${unit.lastAt === undefined ? `no calls since ${dayText(view.since)}` : `last called ${agoText(unit.lastAt, view.now)}`}`
+  const where = `${SERVER_NOTES[unit.scope]?.what ?? unit.scope}${unit.isDown === true ? ' · not connected in this session' : ''}`
+
+  return `${where} · ${unit.lastAt === undefined ? `no calls since ${dayText(view.since)}` : `last called ${agoText(unit.lastAt, view.now)}`}`
 }
 
 const bareSkills = (unit: Unit) => unit.skills.map(skill => (skill.startsWith(`${unit.name}:`) ? skill.slice(unit.name.length + 1) : skill))
@@ -69,7 +79,7 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
     <Box flexDirection="column">
       {view.units.length === 0 ? (
         <Box flexDirection="column">
-          <Text color="success">✓ Nothing unused.</Text>
+          <Text color="success">✓ Nothing unused, nothing loaded twice.</Text>
           <Text dimColor wrap="wrap">{`Every plugin, skill and server was used in the last ${view.days} days.`}</Text>
         </Box>
       ) : (
@@ -81,7 +91,7 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
             </Box>
             <Text dimColor>{`unused ${view.days} days`}</Text>
           </Box>
-          <Text wrap="wrap">{`~${totalText(view.units)} tokens ride in every prompt for things you don't use`}</Text>
+          <Text wrap="wrap">{`~${totalText(view.units)} tokens ride in every prompt for things you don't use or load twice`}</Text>
           <Box>
             <Text color="claude">{bar.filled}</Text>
             <Text dimColor>{bar.empty}</Text>
@@ -134,6 +144,11 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
             {unit.kind === 'plugin' && (
               <Box paddingLeft={2}>
                 <Text dimColor wrap="truncate-end">{skillsText(bareSkills(unit), SKILLS_SHOWN)}</Text>
+              </Box>
+            )}
+            {unit.kind === 'mcp' && SERVER_NOTES[unit.scope] !== undefined && (
+              <Box paddingLeft={2}>
+                <Text dimColor wrap="truncate-end">{SERVER_NOTES[unit.scope]?.how}</Text>
               </Box>
             )}
             {pending !== null && step !== undefined ? (

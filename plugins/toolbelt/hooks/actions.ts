@@ -27,12 +27,21 @@ export function disableOf(unit: Unit, home: string): Step | undefined {
     }
   }
 
-  if (unit.kind === 'skill' && unit.scope === 'user') {
+  if (unit.kind === 'duplicate' && unit.id !== undefined) {
+    return {
+      label: 'Disable',
+      question: `Disable ${unit.id}? The other copy of ${unit.name} stays. This one stays installed.`,
+      argv: ['claude', 'plugin', 'disable', unit.id],
+      record: { key: keyOf('duplicate', unit.name), name: unit.id, how: 'plugin', plugin: unit.id },
+    }
+  }
+
+  if ((unit.kind === 'skill' || unit.kind === 'duplicate') && unit.scope === 'user') {
     const from = `${home}/.claude/skills/${unit.name}`
     const to = `${home}/.claude/skills-disabled/${unit.name}`
 
     return {
-      label: 'Disable',
+      label: unit.kind === 'duplicate' ? 'Disable my copy' : 'Disable',
       question: `Move ${unit.name} to ~/.claude/skills-disabled? It comes back with Enable.`,
       move: { from, to },
       record: { key: keyOf('skill', unit.name), name: unit.name, how: 'folder', from, to },
@@ -49,6 +58,14 @@ export function removeOf(unit: Unit): Step | undefined {
       label: 'Remove',
       question: `Remove ${unit.name}? Its env and keys go too. No undo.`,
       argv: ['claude', 'mcp', 'remove', unit.name, '-s', unit.scope],
+    }
+  }
+
+  if (unit.kind === 'duplicate' && unit.id !== undefined) {
+    return {
+      label: 'Uninstall…',
+      question: `Uninstall ${unit.id}? The other copy of ${unit.name} stays. No undo.`,
+      argv: ['claude', 'plugin', 'uninstall', unit.id],
     }
   }
 

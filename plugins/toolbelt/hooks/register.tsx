@@ -9,10 +9,12 @@ import type { Counters } from './usage'
 import {
   DAY_MS,
   DEFAULT_DAYS,
+  SYNCED_PLUGIN,
   combine,
   countUse,
   daysOf,
-  installedIds,
+  installsOf,
+  isConnector,
   keyOf,
   listText,
   projectServers,
@@ -20,6 +22,8 @@ import {
   serverOf,
   serverScope,
   signature,
+  switchedOff,
+  syncedBare,
   toastText,
   unusedUnits,
   withIds,
@@ -41,7 +45,7 @@ const DISABLED_KEY = 'disabled'
 const TOAST_KEY = 'toast'
 /** Kept by 0.1.0: uses noted live between transcript reads, now counted straight into `uses`. */
 const LIVE_KEY = 'live'
-const RETIRED_KEYS = ['scanned', 'backfilled', 'scopes']
+const RETIRED_KEYS = ['scanned', 'backfilled', 'scopes', 'debug']
 
 type Toast = { at: number; sig: string }
 
@@ -96,22 +100,41 @@ async function readText($: EngineInterface, path: string): Promise<string | unde
   return typeof text === 'string' ? text : undefined
 }
 
-async function inventory($: EngineInterface, counters: Counters | undefined, root: string): Promise<Item[]> {
+/** The skills the desktop app synced, by folder name: one folder per account under `skills/synced`. */
+async function syncedSkills($: EngineInterface) {
+  const root = `${home}/.claude/skills/synced`
+  const names = new Set<string>()
+
+  for (const bucket of home === '' ? [] : await $.fs.list(root).catch(() => [])) {
+    if (bucket.kind !== 'dir') continue
+
+    for (const skill of await $.fs.list(`${root}/${bucket.name}`).catch(() => [])) {
+      if (skill.kind === 'dir') names.add(skill.name)
+    }
+  }
+
+  return names
+}
+
+async function inventory($: EngineInterface, counters: Counters | undefined, root: string, listed: string[]): Promise<Item[]> {
   const items: Item[] = []
+  const synced = await syncedSkills($)
 
   for (const command of await $.command.list()) {
     if (command.source !== 'user' && command.source !== 'plugin') continue
     if (command.source === 'plugin' && !command.name.includes(':')) continue
-    if (command.plugin !== undefined && gone.has(command.plugin)) continue
 
     const isUserSkill = command.source === 'user' && home !== '' && (await $.fs.exists(`${home}/.claude/skills/${command.name}`).catch(() => false))
-    const scope = command.source === 'plugin' ? 'plugin' : isUserSkill ? 'user' : 'unknown'
+    const isSynced = command.source === 'user' && !isUserSkill && synced.has(syncedBare(command.name))
+    const plugin = isSynced ? SYNCED_PLUGIN : command.plugin
+
+    if (plugin !== undefined && gone.has(plugin)) continue
 
     items.push({
       kind: 'skill',
-      name: command.name,
-      scope,
-      ...(command.plugin === undefined ? {} : { plugin: command.plugin }),
+      name: isSynced ? `${SYNCED_PLUGIN}:${syncedBare(command.name)}` : command.name,
+      scope: command.source === 'plugin' || isSynced ? 'plugin' : isUserSkill ? 'user' : 'unknown',
+      ...(plugin === undefined ? {} : { plugin }),
       cost: command.name.length + command.description.length,
     })
   }
@@ -128,8 +151,6 @@ async function inventory($: EngineInterface, counters: Counters | undefined, roo
     servers.set(server, (servers.get(server) ?? 0) + chars)
   }
 
-  const listed = projectServers((await readText($, `${root}/.mcp.json`)) ?? '')
-
   for (const [name, cost] of servers) {
     items.push({ kind: 'mcp', name, scope: serverScope(name, root, listed, counters), cost })
   }
@@ -142,17 +163,21 @@ async function refresh($: EngineInterface) {
   const root = await $.session.root()
   const text = home === '' ? undefined : await readText($, `${home}/.claude.json`)
   const counters = text === undefined ? undefined : readCounters(text)
-  const items = await inventory($, counters, root)
+  const listed = projectServers((await readText($, `${root}/.mcp.json`)) ?? '')
+  const items = await inventory($, counters, root, listed)
+  const installs = installsOf((home === '' ? undefined : await readText($, `${home}/.claude/plugins/installed_plugins.json`)) ?? '')
   const view = {
     project: root,
     now,
     since: await stored($, SINCE_KEY, now),
     days,
     muted: await stored<string[]>($, MUTED_KEY, []),
+    installs,
+    off: switchedOff(await $.settings.read().catch(() => ({}))),
+    listed,
   }
-  const installed = installedIds((home === '' ? undefined : await readText($, `${home}/.claude/plugins/installed_plugins.json`)) ?? '')
-  const unused = withIds(unusedUnits(items, counters, await stored<Uses>($, USES_KEY, {}), view), installed).filter(
-    unit => disableOf(unit, home) !== undefined || removeOf(unit) !== undefined,
+  const unused = withIds(unusedUnits(items, counters, await stored<Uses>($, USES_KEY, {}), view), installs).filter(
+    unit => disableOf(unit, home) !== undefined || removeOf(unit) !== undefined || (unit.kind === 'mcp' && !isConnector(unit.name)),
   )
 
   await update($, units, () => unused)
@@ -192,7 +217,8 @@ async function startup($: EngineInterface) {
 
   if ((await $.store.get(SINCE_KEY)) === undefined) await $.store.set(SINCE_KEY, await $.clock.now())
 
-  const unused = await refresh($)
+  // Servers may still be connecting this early, so one that looks down is left out of the toast.
+  const unused = (await refresh($)).filter(unit => unit.isDown !== true)
   const now = await $.clock.now()
   const last = await stored<Toast | null>($, TOAST_KEY, null)
   const sig = signature(unused)
