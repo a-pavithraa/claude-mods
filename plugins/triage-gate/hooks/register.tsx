@@ -2,11 +2,11 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import type { ChangedFile, Jev, Review, Scope, Subject, Triage } from '../types'
-import { blastOf, countUsers, lineCount, parseNumstat, parseRaw, stemOf } from './blast'
+import { blastOf, countUsers, lineCount, parseNumstat, parseRaw, usersQuery } from './blast'
 import { addWrite, emptyTally, guidePrompt, sizeLevel, sizeNote } from './guide'
-import { JEV_URL, PATCH_CHARS, parseJev, requestBody } from './jev'
+import { JEV_URL, PATCH_CHARS, askOf, parseJev } from './jev'
 import { paneOf } from './pane'
-import { detailsText, reviewHeadline, subjectKey, summaryOf } from './report'
+import { commitPrompt, detailsText, reviewHeadline, subjectKey, summaryOf } from './report'
 import { BRIEF_CHARS, BRIEF_PROMPT, addAsk, lastLine, parseReview, reviewPrompt, reviewScope } from './review'
 import { commitIn } from './shell'
 import { verdictOf } from './verdict'
@@ -110,18 +110,18 @@ async function fingerprintNow($: EngineInterface, subject?: Subject) {
 }
 
 async function usersOf($: EngineInterface, file: ChangedFile, cwd?: string): Promise<ChangedFile> {
-  const stem = stemOf(file.path)
+  const query = usersQuery(file.path)
 
-  if (stem === undefined || file.isNew) {
+  if (query === undefined || file.isNew) {
     return file
   }
 
-  const found = (await git($, ['grep', '-l', '-w', '-F', '-e', stem], inside(cwd))) ?? ''
+  const found = (await git($, ['grep', '--full-name', ...query], inside(cwd))) ?? ''
 
   return { ...file, usedBy: countUsers(found, file.path) }
 }
 
-async function jevOf($: EngineInterface, key: string | undefined, body: string): Promise<Jev> {
+async function jevOf($: EngineInterface, key: string | undefined, { body, hunks }: ReturnType<typeof askOf>): Promise<Jev> {
   if (key === undefined || key === '') {
     return { status: 'off' }
   }
@@ -135,7 +135,7 @@ async function jevOf($: EngineInterface, key: string | undefined, body: string):
       body,
     })
 
-    return { ...parseJev(answered.status, answered.text), tookMs: Date.now() - startedAt }
+    return { ...parseJev(answered.status, answered.text, hunks), tookMs: Date.now() - startedAt }
   } catch {
     return { status: 'failed', note: 'Jev could not be reached; triage used blast radius only.', tookMs: Date.now() - startedAt }
   }
@@ -175,6 +175,7 @@ async function runTriage(
   scope: Scope = 'tree',
   cwd?: string,
   added?: string[],
+  command?: string,
 ): Promise<Triage | null> {
   const { range, limit, paths, numstat } = await changedSince($, scope, cwd, added)
 
@@ -208,7 +209,7 @@ async function runTriage(
     typeof configured === 'string' && configured !== ''
       ? configured
       : await $.env.get('TYPESAFE_API_KEY')
-  const jev = await jevOf($, key, requestBody(blast, patch))
+  const jev = await jevOf($, key, askOf(blast, patch))
   const subject: Subject = { scope, ...(cwd === undefined ? {} : { cwd }), ...(added === undefined ? {} : { paths: added }) }
   const judged: Triage = {
     subject,
@@ -218,6 +219,7 @@ async function runTriage(
     jev,
     isPatchCut: fullPatch.length > PATCH_CHARS,
     assessedAt: Date.now(),
+    ...(command === undefined ? {} : { command }),
   }
 
   await update($, triage, () => judged)
@@ -371,6 +373,18 @@ async function approve($: EngineInterface, drawn?: string) {
   return 'approved'
 }
 
+/** Approves, then puts the request to commit in the prompt box, as Send to Claude does for a review. */
+async function approveAndAsk($: EngineInterface, drawn?: string) {
+  const outcome = await approve($, drawn)
+  const judged = await read($, triage)
+
+  if (outcome !== 'approved' || judged === null) {
+    return { outcome, isFilled: false }
+  }
+
+  return { outcome, isFilled: (await fillKeepingDraft($, commitPrompt(judged))).isFilled }
+}
+
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE })
 
 async function gate($: EngineInterface, options: PluginOptions, command: string, isPosix: boolean) {
@@ -380,7 +394,7 @@ async function gate($: EngineInterface, options: PluginOptions, command: string,
     return undefined
   }
 
-  const judged = await runTriage($, options, commit.scope, commit.cwd, commit.paths)
+  const judged = await runTriage($, options, commit.scope, commit.cwd, commit.paths, command)
 
   if (judged === null || (await read($, approved)).includes(judged.fingerprint)) {
     return undefined
@@ -488,7 +502,8 @@ export const register: Register = (on, options) => {
     const asked = e.args.trim()
 
     if (asked === 'approve') {
-      const outcome = await approve($)
+      const { outcome, isFilled } = await approveAndAsk($)
+      const judged = await read($, triage)
 
       return {
         text:
@@ -496,7 +511,9 @@ export const register: Register = (on, options) => {
             ? 'Nothing has been triaged yet. Run /gate first.'
             : outcome === 'stale'
               ? 'Not approved: the change has been edited since it was assessed. Run /gate to assess it again.'
-              : 'Approved. Ask Claude to run the commit again; any further edit needs triage again.',
+              : isFilled
+                ? 'Approved. The request to commit is in your prompt box: press Enter to send it. Any further edit needs triage again.'
+                : `Approved. Send this to commit; any further edit needs triage again.\n\n${judged === null ? '' : commitPrompt(judged)}`,
       }
     }
 
@@ -530,9 +547,10 @@ export const register: Register = (on, options) => {
     }
 
     return paneOf($.ui.resolve(e), view, {
-      approve: fingerprint => approve($, fingerprint),
+      approve: fingerprint => approveAndAsk($, fingerprint),
       toggleDetails: () => update($, details, open => !open),
-      triage: () => runTriage($, options, judged?.subject?.scope, judged?.subject?.cwd, judged?.subject?.paths),
+      triage: () =>
+        runTriage($, options, judged?.subject?.scope, judged?.subject?.cwd, judged?.subject?.paths, judged?.command),
       codex: () => runCodex($, options),
       send: text => fillKeepingDraft($, text),
     })

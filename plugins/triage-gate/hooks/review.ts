@@ -1,5 +1,6 @@
 import type { Finding, Triage } from '../types'
 import { SENSITIVE_PATH } from './blast'
+import { flagsOf } from './verdict'
 
 const FILES_REVIEWED = 15
 const FINDINGS_ASKED = 5
@@ -15,8 +16,12 @@ export type Intent = { asks: string[]; brief?: string }
 
 export function reviewScope(judged: Triage | null, focus: string) {
   const blast = judged?.blast
+  const pointed = judged === null ? [] : flagsOf(judged.blast, judged.jev).map(flag => flag.at?.path)
   const isFlagged = (path: string) =>
-    SENSITIVE_PATH.test(path) || (blast?.risky.includes(path) ?? false) || blast?.widest?.path === path
+    SENSITIVE_PATH.test(path) ||
+    (blast?.risky.includes(path) ?? false) ||
+    blast?.widest?.path === path ||
+    pointed.includes(path)
   const bySize = [...(blast?.files ?? [])].sort((a, b) => b.added + b.removed - (a.added + a.removed))
   const flagged = bySize.filter(file => isFlagged(file.path))
   const files = [...flagged, ...bySize.filter(file => !isFlagged(file.path))]

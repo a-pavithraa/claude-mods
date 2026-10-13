@@ -1,5 +1,6 @@
-import type { Blast, Jev, Verdict } from '../types'
-import { SENSITIVE_PATH } from './blast'
+import type { Blast, Flag, Jev, Place, Verdict } from '../types'
+import { SENSITIVE_PATH, groupsOf } from './blast'
+import { placeText } from './jev'
 
 const MANY_LINES = 400
 const SOME_LINES = 150
@@ -23,8 +24,95 @@ const CAPS = { size: 3, reach: 2, risk: 2, quality: 2 }
 
 export const percent = (value: number) => `${Math.round(value * 100)}%`
 
-/** How likely, in a word: the pane leads with it and gives the number after. */
+/** How likely, in a word: `/gate details` leads with it and gives the number after. */
 export const likelihood = (value: number) => (value >= LIKELY ? 'likely' : value >= UNLIKELY ? 'possible' : 'unlikely')
+
+/**
+ * The Jev signals that fired, each with the file to look at. A change in behaviour alone is not one: nearly every diff
+ * has it. It fires only when no tests in the diff cover it.
+ */
+export function flagsOf(blast: Blast, jev: Jev): Flag[] {
+  if (jev.status !== 'judged') {
+    return []
+  }
+
+  const find = (key: string) => jev.judgments.find(one => one.key === key)
+  const where = (at: Place | undefined) => (at === undefined ? {} : { at })
+  const flags: Flag[] = jev.judgments
+    .filter(one => SENSITIVE.includes(one.key) && one.value >= UNSURE)
+    .map(one => ({
+      key: one.key,
+      label: one.label,
+      said: one.value >= LIKELY ? `likely touches ${one.label}` : `may touch ${one.label}`,
+      isLikely: one.value >= LIKELY,
+      ...where(one.at),
+    }))
+  const behaviour = find('behaviour')
+
+  if ((behaviour?.value ?? 0) >= LIKELY && (find('tested')?.value ?? 1) < UNLIKELY) {
+    flags.push({
+      key: 'untested',
+      label: 'untested behaviour change',
+      said: 'changes behaviour without tests for it',
+      isLikely: true,
+      ...where(behaviour?.at),
+    })
+  }
+
+  if (jev.hardToRead >= EFFORTFUL) {
+    const isHard = jev.hardToRead >= HARD
+    flags.push({
+      key: 'readability',
+      label: 'hard to follow',
+      said: isHard ? 'hard to follow' : 'parts take effort to follow',
+      isLikely: isHard,
+      ...where(jev.hardestAt),
+    })
+  }
+
+  if ((find('mixed')?.value ?? 0) >= LIKELY) {
+    const groups = groupsOf(blast.files)
+    flags.push({
+      key: 'mixed',
+      label: 'mixes changes',
+      said: 'mixes unrelated changes',
+      isLikely: true,
+      ...(groups.length > 1 ? { groups } : {}),
+    })
+  }
+
+  return flags
+}
+
+export const groupsLine = (groups: { name: string; files: number }[]) =>
+  groups.map(({ name, files }) => `${name} (${files} ${files === 1 ? 'file' : 'files'})`).join(' · ')
+
+/** A fired signal as one line of the Why list: what and where, never a percentage. */
+export function reasonOf(flag: Flag) {
+  if (flag.key === 'mixed') {
+    return `Jev: ${flag.said}${flag.groups === undefined ? '' : `: ${groupsLine(flag.groups)}`}; splitting it would help`
+  }
+
+  return `Jev: ${flag.said}${flag.at === undefined ? '' : `, mostly in ${placeText(flag.at)}`}`
+}
+
+/** The risk topics Jev checked and found nothing in, for one quiet line. */
+export const clearOf = (jev: Jev) =>
+  jev.status === 'judged' ? jev.judgments.filter(one => SENSITIVE.includes(one.key) && one.value < UNSURE).map(one => one.label) : []
+
+/** What Jev said about tests, when it is not already a flag. */
+export function testsNoteOf(jev: Jev) {
+  if (jev.status !== 'judged') return undefined
+
+  const value = (key: string) => jev.judgments.find(one => one.key === key)?.value
+  const tested = value('tested') ?? 0
+  const behaviour = value('behaviour') ?? 0
+
+  if (tested >= LIKELY) return 'Tests in the diff exercise the change.'
+  if (behaviour >= LIKELY && tested >= UNLIKELY) return 'Unclear whether the tests in the diff cover the change.'
+
+  return undefined
+}
 
 export function verdictOf(blast: Blast, jev: Jev) {
   const reasons: string[] = []
@@ -49,22 +137,11 @@ export function verdictOf(blast: Blast, jev: Jev) {
 
   if (blast.risky.length > 0) add('reach', 1, `touches build, config or schema: ${blast.risky.join(', ')}`)
 
-  if (jev.status === 'judged') {
-    const value = (key: string) => jev.judgments.find(one => one.key === key)?.value
+  for (const flag of flagsOf(blast, jev)) {
+    const isRisk = SENSITIVE.includes(flag.key)
+    const weight = (isRisk || flag.key === 'readability') && flag.isLikely ? 2 : 1
 
-    for (const one of jev.judgments.filter(judgment => SENSITIVE.includes(judgment.key))) {
-      if (one.value >= LIKELY) add('risk', 2, `Jev: likely touches ${one.label} (${percent(one.value)})`)
-      else if (one.value >= UNSURE) add('risk', 1, `Jev: may touch ${one.label} (${percent(one.value)})`)
-    }
-
-    if ((value('behaviour') ?? 0) >= LIKELY && (value('tested') ?? 1) < UNLIKELY) {
-      add('quality', 1, 'Jev: changes behaviour without tests for it')
-    }
-
-    if (jev.hardToRead >= HARD) add('quality', 2, `Jev: hard to follow (${percent(jev.hardToRead)})`)
-    else if (jev.hardToRead >= EFFORTFUL) add('quality', 1, `Jev: parts take effort to follow (${percent(jev.hardToRead)})`)
-
-    if ((value('mixed') ?? 0) >= LIKELY) add('quality', 1, 'Jev: mixes unrelated changes; splitting it would help')
+    add(isRisk ? 'risk' : 'quality', weight, reasonOf(flag))
   }
 
   // Consequence is judged apart from size: a small change to sensitive code is never a pass.

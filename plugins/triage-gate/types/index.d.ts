@@ -14,17 +14,35 @@ export type Blast = {
   widest?: ChangedFile
 }
 
+/** A file, and the changed line Jev points at in it when one hunk stands out. */
+export type Place = { path: string; line?: number }
+
+/** `at`: where Jev places the statement, when it is fairly sure of a file. */
 export type Judgment = {
   key: string
   label: string
   value: number
+  at?: Place
 }
 
-/** `tookMs`: how long Jev took to answer, shown in the pane's diagnostics. */
+/**
+ * `tookMs`: how long Jev took to answer, and `tokens`: the input tokens it billed, both shown in the pane's
+ * diagnostics. `hardestAt`: the place hardest to follow.
+ */
 export type Jev =
   | { status: 'off' }
   | { status: 'failed'; note: string; tookMs?: number }
-  | { status: 'judged'; judgments: Judgment[]; hardToRead: number; tookMs?: number }
+  | { status: 'judged'; judgments: Judgment[]; hardToRead: number; hardestAt?: Place; tookMs?: number; tokens?: number }
+
+/** A Jev signal that fired, with where to look: what the pane, the reasons and Start with all show. */
+export type Flag = {
+  key: string
+  label: string
+  said: string
+  isLikely: boolean
+  at?: Place
+  groups?: { name: string; files: number }[]
+}
 
 export type Verdict = 'pass' | 'read' | 'hold'
 
@@ -43,6 +61,8 @@ export type Triage = {
   assessedAt?: number
   /** The change moved on after this assessment: Claude edited a file, or an approval found it changed. */
   isEdited?: boolean
+  /** The shell command Claude ran to commit, when the triage came from one: approving asks Claude to run it again. */
+  command?: string
 }
 
 export type Scope = 'tree' | 'tracked' | 'staged'

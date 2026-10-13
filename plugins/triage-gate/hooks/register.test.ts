@@ -17,6 +17,7 @@ type World = {
   codexExit?: number
   draft?: string
   stagedRaw?: string
+  patch?: string
 }
 
 const REVIEW = `The pager can report one page too many.
@@ -36,7 +37,18 @@ const ZERO = '0'.repeat(40)
 const rawOf = (entries: [path: string, blob: string, status: string][]) =>
   entries.map(([path, blob, status]) => `:100644 100644 ${ZERO} ${blob} ${status}\0${path}\0`).join('')
 
+/** One hunk per file, its first change on line 11, so the hunks are H01, H02 ... in numstat order. */
+const patchOf = (numstat: string) =>
+  numstat
+    .split('\n')
+    .filter(Boolean)
+    .map(line => line.split('\t')[2] ?? '')
+    .map(path => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -10,2 +10,3 @@\n context\n+changed\n context`)
+    .join('\n')
+
 const noul = (value: number) => ({ type: 'noul', noul: value })
+
+const pick = (choice: string, share = 0.9) => ({ type: 'choice', choice, probabilities: { [choice]: share }, confidence: share })
 
 const CALM = {
   behaviour: noul(0.2),
@@ -68,7 +80,7 @@ const PANE_PROPS = {
 } as const
 
 function world(on: On, w: World) {
-  const seen = { fetched: 0, committed: 0, toasts: [] as string[], codexArgs: [] as string[], filled: [] as string[], git: [] as string[], cwds: [] as (string | undefined)[], codexInput: '', modes: [] as string[] }
+  const seen = { fetched: 0, asked: [] as string[], committed: 0, toasts: [] as string[], codexArgs: [] as string[], filled: [] as string[], git: [] as string[], cwds: [] as (string | undefined)[], codexInput: '', modes: [] as string[] }
   const ok = (stdout: string, exitCode = 0) => ({
     value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   })
@@ -110,14 +122,14 @@ function world(on: On, w: World) {
     if (verb === 'diff' && rest.includes('--raw')) {
       return ok(rawOf(w.numstat.split('\n').filter(Boolean).map(line => [line.split('\t')[2] ?? '', ZERO, 'M'])))
     }
-    if (verb === 'diff') return ok('diff --git a/x b/x\n+changed')
+    if (verb === 'diff') return ok(w.patch ?? patchOf(w.numstat))
     if (verb === 'ls-files') return ok(w.untracked ?? '')
     if (verb === 'hash-object') return ok(w.hashes ?? '')
     if (verb === 'grep') {
-      const stem = rest.at(-1) ?? ''
-      const count = w.grep?.[stem] ?? 0
+      const query = rest.at(-1) ?? ''
+      const [stem = '', count = 0] = Object.entries(w.grep ?? {}).find(([name]) => query.includes(name)) ?? []
 
-      return ok(Array.from({ length: count }, (_, at) => `src/user${at}.ts`).join('\n'))
+      return ok(Array.from({ length: count }, (_, at) => `src/user${at}.ts:import x from '@/lib/${stem}'`).join('\n'))
     }
 
     return ok('', 1)
@@ -133,15 +145,16 @@ function world(on: On, w: World) {
     return { value: { code: 0, signal: null } }
   })
   on('model.fork', () => ({ value: { isAnswered: true, text: 'Pages are counted from the item total.', usage: USAGE } }))
-  on('http.fetch', () => {
+  on('http.fetch', ($, e) => {
     seen.fetched += 1
+    seen.asked.push(String(e.init?.body ?? ''))
 
     return {
       value: {
         status: w.jev?.status ?? 200,
         ok: (w.jev?.status ?? 200) < 300,
         headers: {},
-        text: JSON.stringify({ model: 'jev-1.13.0', answers: w.jev?.answers ?? CALM }),
+        text: JSON.stringify({ model: 'jev-1.13.0', answers: w.jev?.answers ?? CALM, usage: { input_tokens: 20_996, output_tokens: 2175 } }),
       },
     }
   })
@@ -195,7 +208,7 @@ for (const surface of SURFACES) {
     await start($)
     const held = await commit($)
     expect(held.deny).toContain('triage-gate held this commit')
-    expect(held.deny).toContain('Jev: likely touches security (86%)')
+    expect(held.deny).toContain('Jev: likely touches security')
     expect(held.deny).toContain('src/auth/session.ts is used by 14 other files')
     expect(seen.committed).toBe(0)
 
@@ -884,7 +897,7 @@ test('the pane leads with a change summary and the files to read first, without 
   ]).toEqual([true, true, true, false, true, true])
 })
 
-test('Jev signals stay folded until asked for, then show risk and tests apart with what each measures', async ($, on) => {
+test('Jev signals stay folded until asked for, then show only what fired, what it means, and the rest in one line', async ($, on) => {
   // #given
   world(on, { numstat: '220\t40\tsrc/auth/session.ts\n', jev: { status: 200, answers: RISKY }, key: 'k' })
   await start($)
@@ -898,11 +911,182 @@ test('Jev signals stay folded until asked for, then show risk and tests apart wi
   // #then
   expect([
     folded,
-    (await pane.find({ text: /likely · 86%/ })) !== undefined,
+    (await pane.find({ text: 'security' })) !== undefined,
     (await pane.find({ text: /Code that decides who may do what/ })) !== undefined,
-    (await pane.find({ text: 'Tests' })) !== undefined,
-    (await pane.find({ text: /unlikely · 10%/ })) !== undefined,
-  ]).toEqual([undefined, true, true, true, true])
+    (await pane.find({ text: 'untested behaviour change' })) !== undefined,
+    (await pane.find({ text: /Not flagged: stored data, money, concurrency, public interface\./ })) !== undefined,
+    await pane.find({ text: /\d+%/ }),
+  ]).toEqual([undefined, true, true, true, true, undefined])
+})
+
+test('a change with tests for its behaviour change is not flagged for it, and the pane says the tests cover it', async ($, on) => {
+  // #given
+  world(on, {
+    numstat: '220\t40\tsrc/pager.ts\n',
+    jev: { status: 200, answers: { ...CALM, behaviour: noul(0.99), tested: noul(0.98) } },
+    key: 'k',
+  })
+  await start($)
+  await triage($)
+  const pane = await mountPane($, 'terminal')
+
+  // #when
+  await pane.press({ key: 'details' })
+
+  // #then
+  expect([
+    await pane.find({ text: 'untested behaviour change' }),
+    (await pane.find({ text: 'Jev flagged nothing in this diff.' })) !== undefined,
+    (await pane.find({ text: 'Tests in the diff exercise the change.' })) !== undefined,
+  ]).toEqual([undefined, true, true])
+})
+
+test('Jev is asked which hunk each signal comes from only when there is more than one hunk, in diff order', async ($, on) => {
+  // #given
+  const w = { numstat: '12\t3\tsrc/pager.ts\n', key: 'k' }
+  const seen = world(on, w)
+  await start($)
+
+  // #when
+  await triage($)
+  w.numstat = '12\t3\tsrc/pager.ts\n4\t1\tsrc/list.ts\n'
+  await triage($)
+  const [one, both = ''] = seen.asked
+
+  // #then
+  expect([
+    one?.includes('"securityAt"'),
+    both.includes('"securityAt"'),
+    both.includes('H01| @@ -10,2 +10,3 @@'),
+    both.indexOf('"H01":null') < both.indexOf('"H02":null'),
+  ]).toEqual([false, true, true, true])
+})
+
+test('a fired signal names the file and line Jev points at, in the reasons and at the top of Start with', async ($, on) => {
+  // #given
+  world(on, {
+    numstat: '220\t40\tsrc/pager.ts\n30\t2\tsrc/api/routes.ts\n',
+    jev: { status: 200, answers: { ...RISKY, securityAt: pick('H02') } },
+    key: 'k',
+  })
+  await start($)
+
+  // #when
+  const held = await commit($)
+  const pane = await mountPane($, 'terminal')
+
+  // #then
+  expect([
+    held.deny?.includes('Jev: likely touches security, mostly in src/api/routes.ts:11'),
+    (await pane.find({ text: /Jev: security$/ })) !== undefined,
+  ]).toEqual([true, true])
+})
+
+test('a one-hunk change needs no "which hunk" question and still names its place', async ($, on) => {
+  // #given
+  world(on, { numstat: '220\t40\tsrc/auth/session.ts\n', jev: { status: 200, answers: RISKY }, key: 'k' })
+  await start($)
+
+  // #when
+  const held = await commit($)
+
+  // #then
+  expect(held.deny).toContain('Jev: likely touches security, mostly in src/auth/session.ts:11')
+})
+
+test("weight spread over one file's hunks names the file without a line", async ($, on) => {
+  // #given two hunks in routes.ts, split evenly
+  const patch = [
+    'diff --git a/src/pager.ts b/src/pager.ts',
+    '@@ -1,1 +1,2 @@',
+    '+a',
+    'diff --git a/src/api/routes.ts b/src/api/routes.ts',
+    '@@ -5,1 +5,2 @@',
+    '+b',
+    '@@ -40,1 +41,2 @@',
+    '+c',
+  ].join('\n')
+  const spread = { type: 'choice', choice: 'H02', probabilities: { H01: 0.1, H02: 0.45, H03: 0.45 }, confidence: 0.4 }
+  world(on, {
+    numstat: '20\t0\tsrc/pager.ts\n30\t2\tsrc/api/routes.ts\n',
+    patch,
+    jev: { status: 200, answers: { ...RISKY, securityAt: spread } },
+    key: 'k',
+  })
+  await start($)
+
+  // #when
+  const held = await commit($)
+
+  // #then
+  expect([held.deny?.includes('mostly in src/api/routes.ts;'), held.deny?.includes('routes.ts:')]).toEqual([true, false])
+})
+
+test('an unsure or empty "which hunk" answer names no place', async ($, on) => {
+  // #given
+  world(on, {
+    numstat: '220\t40\tsrc/pager.ts\n30\t2\tsrc/api/routes.ts\n',
+    jev: {
+      status: 200,
+      answers: { ...RISKY, securityAt: pick('H02', 0.3), behaviourAt: pick('none') },
+    },
+    key: 'k',
+  })
+  await start($)
+
+  // #when
+  const held = await commit($)
+
+  // #then
+  expect(held.deny?.includes('mostly in')).toBe(false)
+})
+
+test('a hunk that clears the bar but loses to "none" names no place', async ($, on) => {
+  // #given
+  const declined = { type: 'choice', choice: 'none', probabilities: { none: 0.6, H01: 0.4 }, confidence: 0.6 }
+  world(on, {
+    numstat: '220\t40\tsrc/pager.ts\n30\t2\tsrc/api/routes.ts\n',
+    jev: { status: 200, answers: { ...RISKY, securityAt: declined } },
+    key: 'k',
+  })
+  await start($)
+
+  // #when
+  const held = await commit($)
+
+  // #then
+  expect(held.deny?.includes('touches security, mostly in')).toBe(false)
+})
+
+test('the diagnostics line says how many tokens Jev read', async ($, on) => {
+  // #given
+  world(on, { numstat: '12\t3\tsrc/pager.ts\n', key: 'k' })
+  await start($)
+  await triage($)
+
+  // #when
+  const shown = (await triage($, 'details')).text ?? ''
+
+  // #then
+  expect(shown).toContain('read 21.0k tokens')
+})
+
+test('a mixed change names the groups it could be split into', async ($, on) => {
+  // #given
+  world(on, {
+    numstat:
+      '20\t3\tREADME.md\n10\t1\tHANDOFF.md\n60\t5\tplugins/toolbelt/hooks/pane.tsx\n40\t5\tplugins/toolbelt/types/index.d.ts\n9\t1\tplugins/triage-gate/hooks/jev.ts\n',
+    jev: { status: 200, answers: { ...CALM, mixed: noul(0.9) } },
+    key: 'k',
+  })
+  await start($)
+  await triage($)
+
+  // #when
+  const shown = (await triage($, 'details')).text ?? ''
+
+  // #then
+  expect(shown).toContain('mixes unrelated changes: root (2 files) · plugins/toolbelt (2 files) · plugins/triage-gate/hooks (1 file); splitting it would help')
 })
 test('an edit by Claude after triage marks the assessment stale in the default view', async ($, on) => {
   // #given
@@ -931,7 +1115,7 @@ test('/gate details gives the signals, files and diagnostics as text, without th
   expect([
     shown.includes('security: likely (86%)'),
     shown.includes('src/auth/session.ts (+220 −40): sensitive code'),
-    /Jev \(TypeSafe\) answered in \d+\.\ds · assessed just now/.test(shown),
+    /Jev \(TypeSafe\) answered in \d+\.\ds, read [\d.]+k tokens · assessed just now/.test(shown),
     shown.includes('secret-key'),
   ]).toEqual([true, true, true, false])
 })
@@ -1009,9 +1193,9 @@ test('an inline pane puts the actions before the reasons and says how to scroll 
   expect(await pane.find({ text: /use the arrow keys to scroll to Why, Start with and the signals/ })).toBeDefined()
 })
 
-test('approving a hold in the pane says to ask Claude to commit again', async ($, on) => {
+test("approving a hold in the pane puts Claude's own commit command in the prompt box", async ($, on) => {
   // #given
-  world(on, { numstat: '900\t0\tsrc/huge.ts\n', key: 'k', jev: { status: 200, answers: RISKY } })
+  const seen = world(on, { numstat: '900\t0\tsrc/huge.ts\n', key: 'k', jev: { status: 200, answers: RISKY } })
   await start($)
   await commit($)
   const pane = await mountPane($, 'terminal')
@@ -1020,7 +1204,42 @@ test('approving a hold in the pane says to ask Claude to commit again', async ($
   await pane.press({ key: 'approve' })
 
   // #then
-  expect(await pane.find({ text: /Approved\. Ask Claude to run the commit again\./ })).toBeDefined()
+  expect([
+    seen.filled,
+    (await pane.find({ text: /Approved\. The request to commit is in your prompt box/ })) !== undefined,
+  ]).toEqual([[expect.stringContaining('Run the commit again, unchanged:\n\n```\ngit add -A && git commit -m "change"\n```')], true])
+})
+
+test('/gate approve of a change /gate judged asks Claude to commit it, after what is already typed', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '900\t0\tsrc/huge.ts\n', key: 'k', jev: { status: 200, answers: RISKY }, draft: 'also bump the version' })
+  await start($)
+  await triage($)
+
+  // #when
+  const said = (await triage($, 'approve')).text ?? ''
+
+  // #then
+  expect([said.startsWith('Approved. The request to commit is in your prompt box'), seen.filled, seen.modes]).toEqual([
+    true,
+    [expect.stringContaining('I reviewed and approved the uncommitted change in the Triage pane. Commit it.')],
+    ['append'],
+  ])
+})
+
+test('a refused approval puts nothing in the prompt box', async ($, on) => {
+  // #given
+  const w = { numstat: '900\t0\tsrc/huge.ts\n', key: 'k', jev: { status: 200, answers: RISKY }, hashes: 'aaa' }
+  const seen = world(on, w)
+  await start($)
+  await commit($)
+  w.hashes = 'bbb'
+
+  // #when
+  await triage($, 'approve')
+
+  // #then
+  expect(seen.filled).toEqual([])
 })
 
 test('a stale hold offers Refresh assessment instead of Approve', async ($, on) => {

@@ -1,4 +1,6 @@
-import type { Blast, Jev, Judgment } from '../types'
+import type { Blast, Jev, Judgment, Place } from '../types'
+import { tagHunks } from './hunks'
+import type { Hunk } from './hunks'
 
 export const JEV_URL = 'https://api.typesafe.ai/v1/systemone'
 export const PATCH_CHARS = 60_000
@@ -82,29 +84,112 @@ export const MEANS: Record<string, string> = {
   concurrency: 'Ordering, locks, retries, caches or timeouts.',
   publicApi: 'Something other code or people depend on: an exported signature, endpoint, CLI flag or file format.',
   tested: 'Whether test files in the diff exercise the behaviour it changes.',
+  untested: 'A user or caller would notice a difference, and no test in the diff exercises it.',
   mixed: 'Several unrelated changes that would be easier to review apart.',
   readability: 'How much effort a reviewer needs to follow the diff.',
 }
 
-export function requestBody(blast: Blast, patch: string) {
-  return JSON.stringify({
+/** The signals worth a "where": each gets a choice among the diff's hunks, asked in the same request. */
+const WHERE_KEYS = ['behaviour', 'security', 'data', 'money', 'concurrency', 'publicApi'] as const
+const NO_HUNK = 'none'
+/** Weight spreads over hunks on a wide diff: on a 45-hunk one, a clear public-interface hunk drew 0.44 for its file. */
+const WHERE_SURE = 0.4
+
+/**
+ * No "no single hunk" option: given one, Jev took it on a wide diff even for signals it rated likely. A nudge
+ * towards code over docs spread the answers further, so it was left out.
+ */
+const whereQuestion = (premise: string, hunks: Hunk[]) => ({
+  type: 'choice',
+  instructions: `Suppose this holds for the diff: ${premise} Each hunk in \`diff\` starts with a tag such as H01|. Which hunk shows it most clearly?`,
+  criteria: { ...Object.fromEntries(hunks.map(hunk => [hunk.id, null])), [NO_HUNK]: 'Nothing in the diff does this.' },
+})
+
+/**
+ * The questions for this change: the fixed ones, plus a "which hunk" for each signal and for readability. They ride
+ * in the same request: only input is billed, and the options are tags, so a "where" adds little. Options keep diff
+ * order, since Jev leans toward the first option. A one-hunk change needs none.
+ */
+export function questionsOf(hunks: Hunk[]) {
+  if (hunks.length < 2) {
+    return QUESTIONS
+  }
+
+  const wheres = WHERE_KEYS.map(key => [`${key}At`, whereQuestion(QUESTIONS[key].criteria.true, hunks)])
+
+  return {
+    ...QUESTIONS,
+    ...Object.fromEntries(wheres),
+    hardestAt: whereQuestion('Some of it is hard for a reviewer to read and understand.', hunks),
+  }
+}
+
+/** The request, and the hunks its tags stand for, to read the answers back with. */
+export function askOf(blast: Blast, patch: string) {
+  const { tagged, hunks } = tagHunks(patch)
+  const body = JSON.stringify({
     model: 'jev-latest',
     state: {
       changed_files: blast.files.map(file => file.path),
-      diff: patch,
+      diff: tagged,
     },
-    questions: QUESTIONS,
+    questions: questionsOf(hunks),
   })
+
+  return { body, hunks }
 }
 
-type RawAnswer = { type?: string; noul?: number; probabilities?: Record<string, number> }
+type RawAnswer = { type?: string; noul?: number; choice?: string; probabilities?: Record<string, number> }
+
+/**
+ * Where a "which hunk" answer points: the file that holds at least `WHERE_SURE` across its hunks and more than "none"
+ * does, and the line of its top hunk when that hunk holds more than half the file's weight. With one hunk there was
+ * no question to ask.
+ */
+function placeOf(answer: RawAnswer | undefined, hunks: Hunk[]): Place | undefined {
+  const [only] = hunks
+
+  if (hunks.length === 1 && only !== undefined) {
+    return { path: only.path, line: only.line }
+  }
+
+  const shares = answer?.probabilities ?? {}
+  const byFile = new Map<string, { weight: number; top?: Hunk; topShare: number }>()
+
+  for (const hunk of hunks) {
+    const share = shares[hunk.id] ?? 0
+    const file = byFile.get(hunk.path) ?? { weight: 0, topShare: 0 }
+    byFile.set(hunk.path, {
+      weight: file.weight + share,
+      ...(share > file.topShare ? { top: hunk, topShare: share } : { top: file.top, topShare: file.topShare }),
+    })
+  }
+
+  const [path, best] = [...byFile].sort(([, a], [, b]) => b.weight - a.weight)[0] ?? []
+
+  if (path === undefined || best === undefined || best.weight < WHERE_SURE || best.weight <= (shares[NO_HUNK] ?? 0)) {
+    return undefined
+  }
+
+  return best.top !== undefined && best.topShare > best.weight / 2 ? { path, line: best.top.line } : { path }
+}
+
+/** A place as a reviewer types it: `path:line`, or the path alone. */
+export const placeText = (at: Place) => (at.line === undefined ? at.path : `${at.path}:${at.line}`)
+
+const tokensOf = (value: unknown) => {
+  const usage = typeof value === 'object' && value !== null && 'usage' in value ? value.usage : undefined
+  const input = typeof usage === 'object' && usage !== null && 'input_tokens' in usage ? usage.input_tokens : undefined
+
+  return typeof input === 'number' ? input : undefined
+}
 
 const asAnswers = (value: unknown): Record<string, RawAnswer> | undefined =>
   typeof value === 'object' && value !== null && 'answers' in value
     ? (value.answers as Record<string, RawAnswer>)
     : undefined
 
-export function parseJev(status: number, text: string): Exclude<Jev, { status: 'off' }> {
+export function parseJev(status: number, text: string, hunks: Hunk[] = []): Exclude<Jev, { status: 'off' }> {
   if (status === 401) {
     return { status: 'failed', note: 'Jev refused the API key (401).' }
   }
@@ -118,9 +203,12 @@ export function parseJev(status: number, text: string): Exclude<Jev, { status: '
   }
 
   let answers: Record<string, RawAnswer> | undefined
+  let tokens: number | undefined
 
   try {
-    answers = asAnswers(JSON.parse(text))
+    const parsed: unknown = JSON.parse(text)
+    answers = asAnswers(parsed)
+    tokens = tokensOf(parsed)
   } catch {
     answers = undefined
   }
@@ -131,13 +219,21 @@ export function parseJev(status: number, text: string): Exclude<Jev, { status: '
 
   const judgments: Judgment[] = Object.keys(LABELS).flatMap(key => {
     const value = answers?.[key]?.noul
+    const at = placeOf(answers?.[`${key}At`], hunks)
 
-    return typeof value === 'number' ? [{ key, label: LABELS[key] ?? key, value }] : []
+    return typeof value === 'number' ? [{ key, label: LABELS[key] ?? key, value, ...(at === undefined ? {} : { at }) }] : []
   })
   const levels = Object.entries(answers.readability?.probabilities ?? {}).sort(
     ([a], [b]) => Number(a) - Number(b),
   )
   const hardToRead = levels.slice(-2).reduce((sum, [, share]) => sum + share, 0)
+  const hardestAt = placeOf(answers.hardestAt, hunks)
 
-  return { status: 'judged', judgments, hardToRead }
+  return {
+    status: 'judged',
+    judgments,
+    hardToRead,
+    ...(hardestAt === undefined ? {} : { hardestAt }),
+    ...(tokens === undefined ? {} : { tokens }),
+  }
 }

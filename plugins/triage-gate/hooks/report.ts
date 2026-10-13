@@ -1,7 +1,7 @@
-import type { Review, Subject, Triage, Verdict } from '../types'
+import type { Place, Review, Subject, Triage, Verdict } from '../types'
 import { startWith } from './blast'
-import { PATCH_CHARS } from './jev'
-import { likelihood, percent } from './verdict'
+import { PATCH_CHARS, placeText } from './jev'
+import { flagsOf, likelihood, percent } from './verdict'
 
 /** One string per judged change, so a Codex review can tell whether a later triage is of the same change. */
 export const subjectKey = (subject: Subject | undefined) =>
@@ -52,6 +52,13 @@ export function reviewHeadline(done: Extract<Review, { status: 'done' }>) {
   return 'Codex review finished with no findings listed'
 }
 
+/** What approving puts in the prompt box: Claude's own commit command again, or a plain request when `/gate` judged it. */
+export function commitPrompt(judged: Triage) {
+  return judged.command === undefined
+    ? 'I reviewed and approved the uncommitted change in the Triage pane. Commit it.'
+    : `I reviewed and approved this change in the Triage pane. Run the commit again, unchanged:\n\n\`\`\`\n${judged.command}\n\`\`\``
+}
+
 /** The `/gate` reply: the verdict, the change, the top reasons, and where the rest is. */
 export function summaryOf(judged: Triage) {
   const { reasons } = judged
@@ -89,9 +96,10 @@ const agoOf = (at: number | undefined) => {
 export function diagnosticsOf(judged: Triage) {
   const { jev } = judged
   const took = jev.status !== 'off' && jev.tookMs !== undefined ? ` in ${(jev.tookMs / 1000).toFixed(1)}s` : ''
+  const read = jev.status === 'judged' && jev.tokens !== undefined ? `, read ${(jev.tokens / 1000).toFixed(1)}k tokens` : ''
   const provider =
     jev.status === 'judged'
-      ? `Jev (TypeSafe) answered${took}`
+      ? `Jev (TypeSafe) answered${took}${read}`
       : jev.status === 'failed'
         ? `Jev (TypeSafe) failed${took}; fell back to local checks`
         : 'Jev off; local checks only'
@@ -102,17 +110,19 @@ export function diagnosticsOf(judged: Triage) {
     .join(' · ')
 }
 
+const inFile = (at: Place | undefined) => (at === undefined ? '' : `, mostly in ${placeText(at)}`)
+
 /** The pane's detail, as text: for `/gate details` where the pane cannot be shown. */
 export function detailsText(judged: Triage) {
   const { jev } = judged
   const signals =
     jev.status === 'judged'
       ? [
-          ...jev.judgments.map(one => `${one.label}: ${likelihood(one.value)} (${percent(one.value)})`),
-          `hard to follow: ${likelihood(jev.hardToRead)} (${percent(jev.hardToRead)})`,
+          ...jev.judgments.map(one => `${one.label}: ${likelihood(one.value)} (${percent(one.value)})${inFile(one.at)}`),
+          `hard to follow: ${likelihood(jev.hardToRead)} (${percent(jev.hardToRead)})${inFile(jev.hardestAt)}`,
         ]
       : []
-  const files = startWith(judged.blast).map(({ file, why }) => `${file.path} (+${file.added} −${file.removed}): ${why}`)
+  const files = startWith(judged.blast, flagsOf(judged.blast, jev)).map(({ file, why }) => `${file.path} (+${file.added} −${file.removed}): ${why}`)
 
   return [
     `${BADGE[judged.verdict].word}. ${changeLine(judged)}.`,

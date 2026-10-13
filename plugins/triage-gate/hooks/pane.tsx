@@ -1,13 +1,11 @@
 import type { Elements, RenderInput } from 'claude-code'
 
-import type { Judgment, Review, Triage } from '../types'
+import type { Flag, Review, Triage } from '../types'
 import { startWith } from './blast'
-import { MEANS } from './jev'
+import { MEANS, placeText } from './jev'
 import { BADGE, changeLine, coverageOf, diagnosticsOf, reviewHeadline, subjectKey } from './report'
 import { fixPrompt, tookOf } from './review'
-import { likelihood, percent } from './verdict'
-
-const RISK_SIGNALS = ['security', 'data', 'money', 'concurrency', 'publicApi', 'behaviour', 'mixed']
+import { clearOf, flagsOf, groupsLine, testsNoteOf } from './verdict'
 
 export type PaneView = {
   judged: Triage | null
@@ -23,13 +21,6 @@ export type PaneActions = {
   triage: () => Promise<unknown>
   codex: () => Promise<unknown>
   send: (text: string) => Promise<unknown>
-}
-
-/** A risk signal's tone; for "has tests" a high value is the good news. */
-const toneOf = (one: Judgment) => {
-  const risk = one.key === 'tested' ? 1 - one.value : one.value
-
-  return risk >= 0.7 ? 'error' : risk >= 0.3 ? 'warning' : undefined
 }
 
 export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneView, act: PaneActions) {
@@ -163,26 +154,32 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
       <Text bold>{text}</Text>
     </Box>
   )
-  const signal = (one: Judgment) => (
-    <Box key={one.key} flexDirection="column">
+  const flags = flagsOf(judged.blast, jev)
+  const clear = clearOf(jev)
+  const testsNote = testsNoteOf(jev)
+  const flagged = (flag: Flag) => (
+    <Box key={flag.key} flexDirection="column" marginTop={1}>
       <Box>
         <Box flexGrow={1} flexShrink={1}>
-          <Text wrap="truncate-end">{one.label}</Text>
+          <Text wrap="truncate-end">{flag.label}</Text>
         </Box>
-        <Text color={toneOf(one)}>
-          {likelihood(one.value)} · {percent(one.value)}
-        </Text>
+        <Text color={flag.isLikely ? 'error' : 'warning'}>{flag.isLikely ? 'likely' : 'possible'}</Text>
       </Box>
       <Text dimColor wrap="wrap">
-        {MEANS[one.key] ?? ''}
+        {MEANS[flag.key] ?? ''}
       </Text>
+      {flag.at !== undefined && (
+        <Text color="suggestion" wrap="truncate-start">
+          ↳ {placeText(flag.at)}
+        </Text>
+      )}
+      {flag.groups !== undefined && (
+        <Text color="suggestion" wrap="wrap">
+          ↳ {groupsLine(flag.groups)}
+        </Text>
+      )}
     </Box>
   )
-  const judgments = jev.status === 'judged' ? jev.judgments : []
-  const risks = judgments.filter(one => RISK_SIGNALS.includes(one.key))
-  const tests = judgments.filter(one => one.key === 'tested')
-  const readability: Judgment[] =
-    jev.status === 'judged' ? [{ key: 'readability', label: 'hard to follow', value: jev.hardToRead }] : []
 
   return (
     <Box flexDirection="column">
@@ -207,7 +204,7 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
       )}
       {judged.verdict === 'hold' && isApproved && !isOutdated && (
         <Text color="success" wrap="wrap">
-          Approved. Ask Claude to run the commit again.
+          Approved. The request to commit is in your prompt box: press Enter to send it.
         </Text>
       )}
 
@@ -248,7 +245,7 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
       ))}
 
       {heading('Start with')}
-      {startWith(judged.blast).map(({ file, why }) => (
+      {startWith(judged.blast, flags).map(({ file, why }) => (
         <Box key={file.path}>
           <Box flexShrink={1}>
             <Text color="suggestion" wrap="truncate-start">
@@ -284,12 +281,23 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
       {isOpen && jev.status === 'judged' && (
         <Box flexDirection="column">
           <Text dimColor wrap="wrap">
-            Jev's estimate that each statement holds for this diff.
+            {flags.length === 0 ? 'Jev flagged nothing in this diff.' : 'What Jev flagged in this diff, and where to look.'}
           </Text>
-          {heading('Risk')}
-          {[...risks, ...readability].map(signal)}
-          {heading('Tests')}
-          {tests.map(signal)}
+          {flags.map(flagged)}
+          {(clear.length > 0 || testsNote !== undefined) && (
+            <Box flexDirection="column" marginTop={1}>
+              {clear.length > 0 && (
+                <Text dimColor wrap="wrap">
+                  Not flagged: {clear.join(', ')}.
+                </Text>
+              )}
+              {testsNote !== undefined && (
+                <Text dimColor wrap="wrap">
+                  {testsNote}
+                </Text>
+              )}
+            </Box>
+          )}
         </Box>
       )}
       {isOpen && (
