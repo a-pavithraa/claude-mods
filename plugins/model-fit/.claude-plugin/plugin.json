@@ -1,6 +1,6 @@
 {
   "name": "model-fit",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "After each ask you type, says what it looked like it needed and what it cost; after a simple or routine ask on a bigger model or effort than it needed, what Haiku, Sonnet or a lower effort would have cost; warns when an ask runs on too small a model or a complex one at low effort; says when the context has grown expensive and how to shrink it; ships /model-fit:baton, a handoff note for a fresh session. Optional Jev shadow labels for comparison.",
   "types": "./types/index.d.ts",
   "userConfig": {

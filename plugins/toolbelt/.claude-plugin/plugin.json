@@ -1,6 +1,6 @@
 {
   "name": "toolbelt",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Lists the plugins, skills and MCP servers you have not used lately and that cost tokens every turn (/unused), judged by Claude Code's own counters, and disables or removes them from a pane.",
   "types": "./types/index.d.ts",
   "userConfig": {
