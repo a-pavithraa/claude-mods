@@ -26,8 +26,8 @@ export function requestBody(brief: string, request: string, previousReply: strin
         type: 'score',
         instructions: brief,
         criteria: [
-          'trivial: a lookup, a concept question, a one-line or one-file edit, a rename, a git or shell chore.',
-          'normal: everything between trivial and complex.',
+          'trivial: a lookup, a concept question, a one-line or one-file edit, a rename within one file, a git or shell chore.',
+          'normal: everything between trivial and complex, including a rename or find-and-replace across many files.',
           'complex: design, a feature across modules, debugging an unknown cause, a wide refactor, security or concurrency.',
         ],
       },

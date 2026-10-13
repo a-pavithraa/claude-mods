@@ -398,6 +398,35 @@ test('a concept question is described to Haiku as simple work', async ($, on) =>
   expect(seen.classified[0]).toContain('a general concept or arithmetic question that needs no code read')
 })
 
+test('a rename across many files is described to Haiku as routine work, not simple', async ($, on) => {
+  // #given
+  const { seen, clock } = world(on, { model: 'opus', label: 'normal' })
+  await start($)
+
+  // #when
+  await ask($, 'Rename getSession to loadSession everywhere, then commit.', 't1')
+  await clock.settle()
+
+  // #then
+  expect(seen.classified[0]).toContain('normal: everything else, including a rename or find-and-replace across many files')
+})
+
+test('Jev shadow is told the same about renames as Haiku', { options: { jevShadow: 'on' } }, async ($, on) => {
+  // #given
+  const { seen, clock } = world(on, { model: 'opus', label: 'normal', key: 'k', jev: { status: 200, probabilities: SURE_SIMPLE } })
+  await start($)
+
+  // #when
+  await runTurn($, clock, HASHMAP)
+
+  // #then
+  expect(JSON.parse(seen.fetched[0] ?? '{}').questions.need.criteria).toEqual([
+    expect.stringContaining('a rename within one file'),
+    expect.stringContaining('a rename or find-and-replace across many files'),
+    expect.any(String),
+  ])
+})
+
 test('Jev shadow is off by default: nothing is sent to TypeSafe and /fit says how to opt in', async ($, on) => {
   // #given
   const { seen, clock } = world(on, { model: 'opus', effort: 'high', label: 'trivial', key: 'k' })

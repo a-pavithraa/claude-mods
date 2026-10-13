@@ -99,9 +99,9 @@ export const NEEDS: readonly Need[] = ['trivial', 'normal', 'complex']
 
 export const CLASSIFY_BRIEF = [
   'A request to a coding agent working in a repository. Label how much model it needs.',
-  'trivial: a lookup, a one-line or one-file edit, a rename, a git or shell chore, a question one file answers, a general concept or arithmetic question that needs no code read ("what is a hashmap", "2 plus 2").',
+  'trivial: a lookup, a one-line or one-file edit, a rename within one file, a git or shell chore, a question one file answers, a general concept or arithmetic question that needs no code read ("what is a hashmap", "2 plus 2").',
   'complex: designing something, a feature across several modules, debugging a cause nobody knows yet, a wide refactor, a security or concurrency question.',
-  'normal: everything else.',
+  'normal: everything else, including a rename or find-and-replace across many files ("rename X everywhere").',
   'A short go-ahead ("yes", "do it", "go on") approves the plan in the previous reply: label the work that plan needs.',
 ].join('\n')
 
