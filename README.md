@@ -46,6 +46,12 @@ Panes and bands only draw where the surface supports them. The terminal is teste
 
 The score looks at size, how many files depend on the changed ones, and sensitive paths (auth, secrets, `.env` ...). With a TypeSafe key, the Jev model also checks for security, data, money, concurrency and API risks.
 
+<img src="media/triage-gate-hold.png" alt="Triage pane holding a 13-file rename: why, files to read first, a Codex review and where Jev looked" width="480">
+
+A two-line change is held too when Jev judges it likely to touch security, and it names the line:
+
+![Terminal: Claude lets admin sessions skip the expiry check, and triage-gate holds the commit](media/triage-gate-security.png)
+
 **How to use it:**
 
 - `/gate` checks the current change and opens the Triage pane: the verdict, why, and which files to read first.
@@ -63,6 +69,8 @@ The score looks at size, how many files depend on the changed ones, and sensitiv
 
 **What it does:** watches for snags that waste time, such as lots of searching before an edit, the same command failing again and again, huge outputs, slow commands and refused calls. When the same snag shows up in a second session, it proposes one fix, for example a line for `CLAUDE.md` or a permission rule.
 
+![hindsight row offering a CLAUDE.md line after the same large log read in two sessions](media/hindsight-fix.png)
+
 **How to use it:** a row above the prompt offers the fix. Pick **Save**, **Put task in prompt**, **Skip** or **Not in this repo**. Once a fix stays clear for five sessions, hindsight marks it as held. `/hindsight` lists all snags for the repo.
 
 **Why a mod:** it has to see every tool call, and you answer a fix with one click.
@@ -70,6 +78,8 @@ The score looks at size, how many files depend on the changed ones, and sensitiv
 ## toolbelt
 
 **What it does:** lists the plugins, skills and MCP servers nobody used in the last 14 days, with what each one costs in tokens on every prompt. It also flags anything loaded twice.
+
+<img src="media/toolbelt-unused.png" alt="The Unused pane: things loaded twice and unused plugins, each with its token cost and Disable or Keep" width="480">
 
 **How to use it:** `/unused` opens the list. Each row has **Disable**, **Remove** or **Keep**. Every action asks you to confirm and applies in the next session. A toast reminds you at most once a day.
 
@@ -80,6 +90,8 @@ The score looks at size, how many files depend on the changed ones, and sensitiv
 ## model-fit
 
 **What it does:** after each ask you type, Haiku labels it trivial, routine or complex. A dim line then shows that label, the model and effort it ran on, and the rough cost. If you used more model than needed (or too little), it suggests `/model` or `/effort`, and tells you if switching would cost more than it saves. It also warns when the context gets expensive.
+
+![A simple question on Opus/high: the band prices it on Haiku and offers to put /model haiku in the prompt box](media/model-fit-band.png)
 
 **How to use it:** read the band; buttons put the suggested command in your prompt box. It never switches anything itself.
 
