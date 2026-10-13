@@ -77,6 +77,8 @@ Note: with a key configured, each triage (a commit Claude makes, `/gate`, or "Tr
 
 ## hindsight
 
+It is a mod rather than a skill because it has to watch every tool call, which a skill cannot, and a fix is offered as a row you answer with a click, not a question Claude has to remember to ask.
+
 It watches the main loop for snags that waste a session, each one a kind the retro skill can fix in the environment:
 
 - many searches and reads before the first edit of a turn
@@ -101,6 +103,8 @@ After a fix is saved or sent, hindsight counts the sessions in that repo without
 
 ## toolbelt
 
+It is a mod rather than a script because it reads what the session actually loaded: the skills and MCP tools Claude Code lists at runtime, with whether each server connected and whether its tools are deferred. Config files alone do not show that.
+
 Lists the plugins, skills and MCP servers nobody used in 14 days, dearest first, so you can disable or remove them. Change the window with `claude plugin configure toolbelt@my-mods` (7, 14, 30, 60 or 90 days). It does not judge whether a skill is good; it counts use.
 
 Plugins and skills are judged by the usage counters Claude Code keeps in `~/.claude.json` (the ones `/skill-doctor` reads), so the list agrees with Claude Code and `/unused` answers at once; nothing is read from transcripts. Those counters are internal: if they cannot be read the pane says skills are not judged. Nothing there counts MCP use, so Toolbelt counts server calls itself from the first session and lists a server only once that tracking is as old as the window. A server's scope (user, project, local) is read from `.mcp.json` and the same config, and a project or local server is unused per repo.
@@ -116,6 +120,8 @@ A plugin is one row, because its skills can only be switched off together; it is
 Every action asks a second time and takes effect in the next session. Actions run the `claude` CLI; no config file is edited by hand.
 
 ## model-fit
+
+It is a mod rather than a hook because its advice is for you, not the model: a hook's output goes into Claude's context, costs tokens and can steer the answer, while the band and its buttons reach you directly and keep the session's cache and cost state between asks.
 
 Haiku labels each prompt you type as trivial, normal or complex, reading it together with the end of the last reply, so "yes please" is judged by the plan it approves. A concept or arithmetic question that needs no code read ("what is a hashmap") counts as trivial.
 
