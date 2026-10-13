@@ -12,7 +12,7 @@ Check model-fit 0.7.0 in a live session: run `/reload-plugins`, grow a conversat
 |---|---|---|---|
 | `triage-gate` | 0.9.0 | 80 | Partly: 0.1.0 made a real Jev call and held, and a Codex run finished (2026-10-10); 0.9.0's "which hunk" questions checked against the live API on this repo's diff (2026-10-13) |
 | `model-fit` | 0.8.1 | 40 | Partly: band seen in terminal (0.2.0) |
-| `hindsight` | 0.4.0 | 31 | Partly: 0.2.0 recorded snags, proposed a fix and handed off to the retro (2026-10-12) |
+| `hindsight` | 0.4.1 | 33 | Partly: 0.2.0 recorded snags, proposed a fix and handed off to the retro (2026-10-12) |
 | `toolbelt` | 0.3.0 | 51 | No: tests, tsc and validate only; `/reload-plugins` then `/unused` not yet run live (see docs/toolbelt-rework-plan.md section 9) |
 | `quiz-me` (skill) | 0.3.0 | n/a | No |
 

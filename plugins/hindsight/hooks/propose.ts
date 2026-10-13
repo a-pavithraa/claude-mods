@@ -76,13 +76,22 @@ export function proposePrompt(snag: Snag, facts: RepoFacts): string {
     '- economy: a cheaper way to get the same information (a narrower command, a quiet flag, a limit).',
     '- setting: a Claude Code settings change, such as a permission rule in .claude/settings.json ("Bash(npm test:*)").',
     '- none: nothing in the environment would have helped.',
-    'Write the change as one imperative sentence a person can act on, at most 40 words. A pointer is the exact line.',
+    'Write the change as one imperative sentence a person can act on, at most 40 words. A pointer is the exact line, without "Add to CLAUDE.md".',
     '',
     'Answer with JSON only: {"fix": "pointer"|"check"|"standard"|"info"|"economy"|"setting"|"none", "text": "..."}',
   ].join('\n')
 }
 
 export type Fix = { kind: FixKind; text: string } | 'none'
+
+/** A pointer the model wrapped as an instruction ("Add to ./CLAUDE.md: \"...\""): the row adds that itself. */
+const POINTER_WRAPPER = /^(add|append)( (this|the|a|one))?( line)? to (\.\/)?CLAUDE\.md\s*:\s*/i
+
+const pointerLine = (text: string) => {
+  const bare = text.replace(POINTER_WRAPPER, '')
+
+  return bare === text ? text : bare.replace(/^["'“](.*)["'”]$/, '$1').trim()
+}
 
 export function parseFix(reply: string): Fix | undefined {
   const json = /\{[\s\S]*\}/.exec(reply)?.[0]
@@ -95,7 +104,8 @@ export function parseFix(reply: string): Fix | undefined {
     if (parsed.fix === 'none') return 'none'
 
     const kind = FIX_KINDS.find(one => one === parsed.fix)
-    const text = typeof parsed.text === 'string' ? parsed.text.trim().replace(/\s+/g, ' ') : ''
+    const said = typeof parsed.text === 'string' ? parsed.text.trim().replace(/\s+/g, ' ') : ''
+    const text = kind === 'pointer' ? pointerLine(said) : said
 
     if (kind === undefined || text === '' || text.length > MAX_FIX) return undefined
     if (kind === 'pointer' && (text.includes('<!--') || text.includes('-->'))) return undefined

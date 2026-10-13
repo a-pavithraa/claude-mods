@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { costText, withPointer } from './propose'
+import { costText, parseFix, withPointer } from './propose'
 import { addAsked, addOutput, addReached, addRun, addTiming, addWrite, areaOf, commandKey, emptyLog, focusOf, signalsOf, targetKey } from './signals'
 
 const USAGE = { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 0 }
@@ -163,6 +163,28 @@ test('a pointer goes in one marked section, once', () => {
   expect(first).toContain('<!-- hindsight: navigation pointers (edit freely) -->\n- Hook code: plugins/x/hooks\n<!-- end hindsight -->')
   expect(withPointer(first, 'Hook code: plugins/x/hooks')).toBe(first)
   expect(withPointer(`${first}<!-- end hindsight -->\n`, 'Other')).toBeUndefined()
+})
+
+test('a pointer the model wrote as "Add to ./CLAUDE.md: ..." keeps only the line, so the row and the file do not repeat it', () => {
+  // #given
+  const reply = '{"fix": "pointer", "text": "Add to ./CLAUDE.md: \\"Logs in logs/ are large; never Read them whole.\\""}'
+
+  // #when
+  const fix = parseFix(reply)
+
+  // #then
+  expect(fix).toEqual({ kind: 'pointer', text: 'Logs in logs/ are large; never Read them whole.' })
+})
+
+test('a task that starts with "Add" is left as written', () => {
+  // #given
+  const reply = '{"fix": "check", "text": "Add to CLAUDE.md: a pre-commit hook that runs npm test."}'
+
+  // #when
+  const fix = parseFix(reply)
+
+  // #then
+  expect(fix).toEqual({ kind: 'check', text: 'Add to CLAUDE.md: a pre-commit hook that runs npm test.' })
 })
 
 test('one spiral only watches; the same spiral in a second session offers a pointer to save', async ($, on) => {
