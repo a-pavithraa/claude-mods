@@ -79,7 +79,7 @@ A two-line change is held too when Jev judges it likely to touch security, and i
 
 **What it does:** lists the plugins, skills and MCP servers nobody used in the last 14 days, with what each one costs in tokens on every prompt. It also flags anything loaded twice.
 
-<img src="media/toolbelt-unused.png" alt="The Unused pane: things loaded twice and unused plugins, each with its token cost and Disable or Keep" width="480">
+![The Unused pane: an unused plugin, unused skills, things loaded twice and unused MCP servers, each with its token cost and Disable or Keep](media/toolbelt-unused.png)
 
 **How to use it:** `/unused` opens the list. Each row has **Disable**, **Remove** or **Keep**. Every action asks you to confirm and applies in the next session. A toast reminds you at most once a day.
 
