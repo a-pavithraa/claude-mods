@@ -32,6 +32,6 @@ Setup:
 claude plugin configure triage-gate@my-mods
 ```
 
-The `typesafeApiKey` option is secret; `TYPESAFE_API_KEY` is the fallback. Without either, triage uses the blast radius alone. `codexModel` picks the Codex review model.
+The `typesafeApiKey` option is secret; `TYPESAFE_API_KEY` is the fallback. Without either, triage uses the blast radius alone. `jevModel` picks the Jev version: `jev-1.13.0` by default, since the thresholds were tuned on it; `jev-1.14.0` or `jev-latest` otherwise. `codexModel` picks the Codex review model.
 
 Note: with a key configured, each triage (a commit Claude makes, `/gate`, or "Triage again") sends the changed file paths and up to 60k characters of the diff to TypeSafe (api.typesafe.ai). A Codex review runs only on request and is billed to your Codex account.

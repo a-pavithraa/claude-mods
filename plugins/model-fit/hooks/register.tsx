@@ -27,7 +27,7 @@ import {
   warn,
 } from './fit'
 import type { History } from './fit'
-import { JEV_TIMEOUT_MS, JEV_URL, jevCostOf, keep, parseJev, requestBody, shadowReport } from './jev'
+import { JEV_MODEL, JEV_TIMEOUT_MS, JEV_URL, jevCostOf, keep, parseJev, requestBody, shadowReport } from './jev'
 
 const advice = atom({ plugin: 'model-fit', key: 'advice' } as const, null)
 const context = atom({ plugin: 'model-fit', key: 'context' } as const, null)
@@ -153,6 +153,9 @@ async function lastReply($: EngineInterface) {
   return ''
 }
 
+const jevModelOf = (options: PluginOptions) =>
+  typeof options.jevModel === 'string' && options.jevModel !== '' ? options.jevModel : JEV_MODEL
+
 async function jevKeyOf($: EngineInterface, options: PluginOptions) {
   if (options.jevShadow !== 'on') return undefined
 
@@ -268,7 +271,7 @@ async function judge($: EngineInterface, options: PluginOptions, session: Sessio
   const key = await jevKeyOf($, options)
 
   if (key !== undefined) {
-    const body = requestBody(CLASSIFY_BRIEF, ask, reply.slice(-REPLY_CHARS))
+    const body = requestBody(CLASSIFY_BRIEF, ask, reply.slice(-REPLY_CHARS), jevModelOf(options))
     session.shadowed.set(turnId, { ask, jev: askJev($, key, body), jevUsd: jevCostOf(body) })
   }
 

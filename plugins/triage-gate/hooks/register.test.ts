@@ -962,6 +962,30 @@ test('Jev is asked which hunk each signal comes from only when there is more tha
   ]).toEqual([false, true, true, true])
 })
 
+test('Jev is asked on the pinned 1.13 model, not jev-latest', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n', key: 'k' })
+  await start($)
+
+  // #when
+  await triage($)
+
+  // #then
+  expect(JSON.parse(seen.asked[0] ?? '{}').model).toBe('jev-1.13.0')
+})
+
+test('the jevModel option picks the Jev model', { options: { jevModel: 'jev-1.14.0' } }, async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n', key: 'k' })
+  await start($)
+
+  // #when
+  await triage($)
+
+  // #then
+  expect(JSON.parse(seen.asked[0] ?? '{}').model).toBe('jev-1.14.0')
+})
+
 test('a fired signal names the file and line Jev points at, in the reasons and at the top of Start with', async ($, on) => {
   // #given
   world(on, {

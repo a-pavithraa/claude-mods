@@ -1,6 +1,6 @@
 {
   "name": "model-fit",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "After each ask you type, says what it looked like it needed and what it cost; after a simple or routine ask on a bigger model or effort than it needed, what Haiku, Sonnet or a lower effort would have cost; warns when an ask runs on too small a model or a complex one at low effort; says when the context has grown expensive and how to shrink it; ships /model-fit:baton, a handoff note for a fresh session. Optional Jev shadow labels for comparison.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -26,6 +26,19 @@
         "on"
       ],
       "default": "off",
+      "sensitive": false,
+      "required": false
+    },
+    "jevModel": {
+      "type": "string",
+      "title": "Jev model",
+      "description": "Pinned so the shadow comparison stays on one model. jev-1.14.0 is newer; jev-latest follows whatever TypeSafe points it at.",
+      "options": [
+        "jev-1.13.0",
+        "jev-1.14.0",
+        "jev-latest"
+      ],
+      "default": "jev-1.13.0",
       "sensitive": false,
       "required": false
     },

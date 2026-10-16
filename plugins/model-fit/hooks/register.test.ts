@@ -474,6 +474,30 @@ test('Jev shadow gets the same end of the last reply as Haiku, never the whole r
   expect(JSON.parse(seen.fetched[0] ?? '{}').state.previous_assistant_reply).toBe('b'.repeat(1_200))
 })
 
+test('Jev shadow asks the pinned 1.13 model unless jevModel says otherwise', { options: { jevShadow: 'on' } }, async ($, on) => {
+  // #given
+  const { seen, clock } = world(on, { model: 'opus', label: 'normal', key: 'k', jev: { status: 200, probabilities: SURE_SIMPLE } })
+  await start($)
+
+  // #when
+  await runTurn($, clock, HASHMAP)
+
+  // #then
+  expect(JSON.parse(seen.fetched[0] ?? '{}').model).toBe('jev-1.13.0')
+})
+
+test('the jevModel option picks the Jev shadow model', { options: { jevShadow: 'on', jevModel: 'jev-1.14.0' } }, async ($, on) => {
+  // #given
+  const { seen, clock } = world(on, { model: 'opus', label: 'normal', key: 'k', jev: { status: 200, probabilities: SURE_SIMPLE } })
+  await start($)
+
+  // #when
+  await runTurn($, clock, HASHMAP)
+
+  // #then
+  expect(JSON.parse(seen.fetched[0] ?? '{}').model).toBe('jev-1.14.0')
+})
+
 test('an unsure Jev answer is no call, not a disagreement', { options: { jevShadow: 'on' } }, async ($, on) => {
   // #given
   const { clock } = world(on, { model: 'opus', label: 'normal', key: 'k', jev: { status: 200, probabilities: TORN } })

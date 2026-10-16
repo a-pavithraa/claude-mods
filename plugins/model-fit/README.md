@@ -34,6 +34,7 @@ Set `jevShadow` to `on`, and `typesafeApiKey` (or `TYPESAFE_API_KEY`). Set it ba
 
 - **Haiku still drives the advice.** Jev's label is only logged beside it, with Jev's probabilities, how long it took, any error, the turn's model and cost, and Jev's estimated cost ($0.042 per million input tokens, four characters to a token).
 - **An unsure Jev is no call.** If Jev's top label is under 80%, it counts as unsure, not as complex and not as a disagreement.
+- **The model is pinned.** `jevModel` defaults to `jev-1.13.0`, so the comparison is not split across two models when TypeSafe moves `jev-latest`. Pick `jev-1.14.0` or `jev-latest` to change it.
 - **Failures are quiet.** Jev gets 8 seconds. A failure or timeout is logged; the first in a session raises one toast, and the Haiku labels carry on.
 - `/fit` shows the comparison: asks compared, agreements among Jev's sure answers, how often Jev was unsure or failed, its median time, its total cost, and the last five disagreements. The last 200 asks are kept.
 

@@ -4,6 +4,8 @@ import type { Hunk } from './hunks'
 
 export const JEV_URL = 'https://api.typesafe.ai/v1/systemone'
 export const PATCH_CHARS = 60_000
+/** Pinned, not `jev-latest`: the thresholds below were tuned on 1.13, and `jev-latest` moves without notice. */
+export const JEV_MODEL = 'jev-1.13.0'
 
 const yesNo = (instructions: string, yes: string, no: string) => ({
   type: 'noul',
@@ -125,10 +127,10 @@ export function questionsOf(hunks: Hunk[]) {
 }
 
 /** The request, and the hunks its tags stand for, to read the answers back with. */
-export function askOf(blast: Blast, patch: string) {
+export function askOf(blast: Blast, patch: string, model = JEV_MODEL) {
   const { tagged, hunks } = tagHunks(patch)
   const body = JSON.stringify({
-    model: 'jev-latest',
+    model,
     state: {
       changed_files: blast.files.map(file => file.path),
       diff: tagged,

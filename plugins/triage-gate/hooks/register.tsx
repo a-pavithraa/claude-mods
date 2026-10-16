@@ -4,7 +4,7 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 import type { ChangedFile, Jev, Review, Scope, Subject, Triage } from '../types'
 import { blastOf, countUsers, lineCount, parseNumstat, parseRaw, usersQuery } from './blast'
 import { addWrite, emptyTally, guidePrompt, sizeLevel, sizeNote } from './guide'
-import { JEV_URL, PATCH_CHARS, askOf, parseJev } from './jev'
+import { JEV_MODEL, JEV_URL, PATCH_CHARS, askOf, parseJev } from './jev'
 import { paneOf } from './pane'
 import { commitPrompt, detailsText, reviewHeadline, subjectKey, summaryOf } from './report'
 import { BRIEF_CHARS, BRIEF_PROMPT, addAsk, lastLine, parseReview, reviewPrompt, reviewScope } from './review'
@@ -209,7 +209,7 @@ async function runTriage(
     typeof configured === 'string' && configured !== ''
       ? configured
       : await $.env.get('TYPESAFE_API_KEY')
-  const jev = await jevOf($, key, askOf(blast, patch))
+  const jev = await jevOf($, key, askOf(blast, patch, jevModelOf(options)))
   const subject: Subject = { scope, ...(cwd === undefined ? {} : { cwd }), ...(added === undefined ? {} : { paths: added }) }
   const judged: Triage = {
     subject,
@@ -248,6 +248,9 @@ async function markEdited($: EngineInterface) {
   await update($, review, held => (held.status === 'done' && held.isEdited !== true ? { ...held, isEdited: true } : held))
   await update($, triage, held => (held !== null && held.isEdited !== true ? { ...held, isEdited: true } : held))
 }
+
+const jevModelOf = (options: PluginOptions) =>
+  typeof options.jevModel === 'string' && options.jevModel !== '' ? options.jevModel : JEV_MODEL
 
 async function runCodex($: EngineInterface, options: PluginOptions, focus = '') {
   const startedAt = Date.now()

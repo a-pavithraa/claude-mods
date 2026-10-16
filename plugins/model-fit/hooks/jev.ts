@@ -2,6 +2,8 @@ import type { Need, ShadowJev, ShadowRow } from '../types'
 
 export const JEV_URL = 'https://api.typesafe.ai/v1/systemone'
 export const JEV_TIMEOUT_MS = 8000
+/** Pinned, not `jev-latest`: a shadow comparison means little if the model moves under it. */
+export const JEV_MODEL = 'jev-1.13.0'
 /** Below this, Jev's top label is no call at all: an uncertain answer is not read as "complex". */
 export const SURE = 0.8
 export const SHADOW_KEEP = 200
@@ -17,9 +19,9 @@ export const jevCostOf = (body: string) => (body.length / CHARS_PER_TOKEN) * (JE
 
 const ORDER: readonly Need[] = ['trivial', 'normal', 'complex']
 
-export function requestBody(brief: string, request: string, previousReply: string) {
+export function requestBody(brief: string, request: string, previousReply: string, model = JEV_MODEL) {
   return JSON.stringify({
-    model: 'jev-latest',
+    model,
     state: { request, previous_assistant_reply: previousReply },
     questions: {
       need: {
