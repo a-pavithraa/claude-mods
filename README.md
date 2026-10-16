@@ -12,6 +12,8 @@ Claude Code plugins that keep you in the loop while an agent writes your code.
 
 A **mod** is a plugin that runs code inside Claude Code and can show you panes, bands, buttons and toasts. A **skill** is instructions Claude follows. Each plugin installs on its own. Click a name for the full details.
 
+[![What each mod listens to, decides with, shows and can change, and what leaves your machine](media/mods-map.png)](mods-map.html)
+
 ## Install
 
 You need:

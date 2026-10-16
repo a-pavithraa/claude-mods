@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-mods map</title>
+<style>
+  :root {
+    --bg: #f7f6f2; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6a64; --line: #e3e1d9;
+    --gate: #c2410c; --gate-bg: #fff1e8;
+    --fit: #1d4ed8; --fit-bg: #eef3ff;
+    --hind: #7c3aed; --hind-bg: #f4efff;
+    --belt: #047857; --belt-bg: #e9f8f1;
+    --quiz: #6b6a64; --quiz-bg: #f0efea;
+    --local: #047857; --opt: #b45309; --ask: #1d4ed8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151514; --card: #1f1f1d; --ink: #ecebe6; --muted: #a3a29b; --line: #34332f;
+      --gate: #fb923c; --gate-bg: #2b1c12; --fit: #7aa2ff; --fit-bg: #161d30;
+      --hind: #b794ff; --hind-bg: #221a33; --belt: #4ade9b; --belt-bg: #12261d;
+      --quiz: #a3a29b; --quiz-bg: #262622; --local: #4ade9b; --opt: #fbbf24; --ask: #7aa2ff;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151514; --card: #1f1f1d; --ink: #ecebe6; --muted: #a3a29b; --line: #34332f;
+    --gate: #fb923c; --gate-bg: #2b1c12; --fit: #7aa2ff; --fit-bg: #161d30;
+    --hind: #b794ff; --hind-bg: #221a33; --belt: #4ade9b; --belt-bg: #12261d;
+    --quiz: #a3a29b; --quiz-bg: #262622; --local: #4ade9b; --opt: #fbbf24; --ask: #7aa2ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1120px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .lede { color: var(--muted); margin: 0 0 24px; }
+
+  .flow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 28px; font-size: 14px; }
+  .flow span.node { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; font-weight: 600; }
+  .flow span.arrow { color: var(--muted); }
+
+  .grid { display: grid; grid-template-columns: 150px repeat(4, 1fr); gap: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .head { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 12px 14px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  .head b { display: block; color: var(--ink); text-transform: none; letter-spacing: 0; font-size: 13px; }
+  .cell { padding: 14px; border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); font-size: 14px; position: relative; }
+  .cell:not(.mod) + .cell::before { content: "→"; position: absolute; left: -9px; top: 14px; color: var(--muted); background: var(--card); font-size: 13px; line-height: 1; padding: 2px 0; }
+  .row-last { border-bottom: 0; }
+  .mod { border-left: 0; font-weight: 700; }
+  .mod small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .mod::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--c); }
+  .gate { --c: var(--gate); } .fit { --c: var(--fit); } .hind { --c: var(--hind); } .belt { --c: var(--belt); } .quiz { --c: var(--quiz); }
+  ul { margin: 0; padding-left: 16px; } li { margin: 2px 0; }
+  code { font: 12.5px ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+
+  .tag { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 0 7px; margin-left: 4px; border: 1px solid currentColor; vertical-align: 1px; white-space: nowrap; }
+  .t-local { color: var(--local); } .t-opt { color: var(--opt); } .t-ask { color: var(--ask); }
+  .act { font-weight: 600; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 2px 0; font-size: 13px; color: var(--muted); }
+  .legend .tag { margin: 0 6px 0 0; }
+
+  .out { margin-top: 32px; }
+  .out h2 { font-size: 16px; margin: 0 0 10px; }
+  .out table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; font-size: 14px; }
+  .out th, .out td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .out th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); background: var(--bg); }
+  .out tr:last-child td { border-bottom: 0; }
+
+  @media (max-width: 820px) {
+    .grid { grid-template-columns: 1fr; }
+    .head { display: none; }
+    .cell { border-left: 0; padding-left: 18px; }
+    .cell[data-col]::before, .cell:not(.mod) + .cell[data-col]::before { content: attr(data-col); display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 4px; position: static; background: none; padding: 0; }
+    .mod { background: var(--bg); }
+    .out table, .out tbody, .out tr, .out td { display: block; width: 100%; }
+    .out thead { display: none; }
+    .out td:first-child { font-weight: 700; background: var(--bg); }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>claude-mods at a glance</h1>
+  <p class="lede">Each row is one plugin. Read it left to right: what wakes it up, how it decides, what you see, and what it is allowed to change.</p>
+
+  <div class="flow" aria-label="How a mod runs">
+    <span class="node">You type</span><span class="arrow">→</span>
+    <span class="node">Claude Code works</span><span class="arrow">→</span>
+    <span class="node">a mod listens to its events</span><span class="arrow">→</span>
+    <span class="node">a pane, band or toast for you</span>
+  </div>
+
+  <div class="grid" role="table" aria-label="What each mod does">
+    <div class="head" role="columnheader">Mod</div>
+    <div class="head" role="columnheader"><b>Wakes up when</b>the trigger</div>
+    <div class="head" role="columnheader"><b>Decides with</b>what it checks</div>
+    <div class="head" role="columnheader"><b>Shows you</b>where it appears</div>
+    <div class="head" role="columnheader"><b>Can change</b>its one power</div>
+
+    <div class="cell mod gate">triage-gate<small>a gate before commits</small></div>
+    <div class="cell" data-col="Wakes up when"><ul><li>Claude runs <code>git commit</code></li><li>you type <code>/gate</code></li></ul></div>
+    <div class="cell" data-col="Decides with"><ul><li>Size, reach and sensitive paths from git <span class="tag t-local">local</span></li><li>Jev risk check and where to look <span class="tag t-opt">opt-in key</span></li><li>Codex review <span class="tag t-ask">on request</span></li></ul></div>
+    <div class="cell" data-col="Shows you"><ul><li>Triage pane: verdict, why, files to read first</li><li>A toast when a review is recommended</li></ul></div>
+    <div class="cell act" data-col="Can change">Holds the commit until you <code>/gate approve</code></div>
+
+    <div class="cell mod fit">model-fit<small>right model for the ask</small></div>
+    <div class="cell" data-col="Wakes up when"><ul><li>you send an ask</li><li>a turn ends</li></ul></div>
+    <div class="cell" data-col="Decides with"><ul><li>Haiku labels the ask: trivial, normal or complex</li><li>Turn cost and context size <span class="tag t-local">local</span></li><li>Jev shadow label, for comparison only <span class="tag t-opt">opt-in</span></li></ul></div>
+    <div class="cell" data-col="Shows you"><ul><li>Band above the prompt after a turn</li><li><code>/fit</code> report</li></ul></div>
+    <div class="cell act" data-col="Can change">Fills a suggestion such as <code>/model haiku</code> into the prompt box; you press Enter</div>
+
+    <div class="cell mod hind">hindsight<small>stops repeat snags</small></div>
+    <div class="cell" data-col="Wakes up when"><ul><li>any tool call</li><li>a turn ends</li></ul></div>
+    <div class="cell" data-col="Decides with"><ul><li>Snag detectors: searching, repeat failures, huge output, slow or refused calls <span class="tag t-local">local</span></li><li>Same snag in a second session → Claude drafts one fix</li></ul></div>
+    <div class="cell" data-col="Shows you"><ul><li>Row above the prompt with the fix</li><li><code>/hindsight</code> list</li></ul></div>
+    <div class="cell act" data-col="Can change">Saves the fix (for example a <code>CLAUDE.md</code> line) only when you press Save</div>
+
+    <div class="cell mod belt">toolbelt<small>prunes what you never use</small></div>
+    <div class="cell" data-col="Wakes up when"><ul><li>a session starts</li><li>tools are used</li><li>you type <code>/unused</code></li></ul></div>
+    <div class="cell" data-col="Decides with"><ul><li>14 days of use per plugin, skill and MCP server <span class="tag t-local">local</span></li><li>Token cost of each on every prompt</li></ul></div>
+    <div class="cell" data-col="Shows you"><ul><li>Unused pane, with anything loaded twice</li></ul></div>
+    <div class="cell act" data-col="Can change">Disables or removes one with <code>claude plugin</code> / <code>claude mcp</code>, after you confirm</div>
+
+    <div class="cell mod quiz row-last">quiz-me<small>a skill, not a mod</small></div>
+    <div class="cell row-last" data-col="Wakes up when"><ul><li>you type <code>/quiz</code></li></ul></div>
+    <div class="cell row-last" data-col="Decides with"><ul><li>Instructions Claude follows; no code runs</li></ul></div>
+    <div class="cell row-last" data-col="Shows you"><ul><li>Questions in the chat about what the session changed</li></ul></div>
+    <div class="cell act row-last" data-col="Can change">Nothing</div>
+  </div>
+
+  <div class="legend">
+    <span><span class="tag t-local">local</span>stays on your machine</span>
+    <span><span class="tag t-opt">opt-in</span>off until you add a TypeSafe key or turn it on</span>
+    <span><span class="tag t-ask">on request</span>runs only when you ask</span>
+  </div>
+
+  <section class="out">
+    <h2>What leaves your machine</h2>
+    <table>
+      <thead><tr><th>Mod</th><th>Sent to</th><th>What</th><th>When</th></tr></thead>
+      <tbody>
+        <tr><td>triage-gate</td><td>TypeSafe (Jev)</td><td>File paths and up to 60k characters of the diff</td><td>Each check, only with a key</td></tr>
+        <tr><td>triage-gate</td><td>Codex</td><td>The changed files</td><td>Only on <code>/gate codex</code></td></tr>
+        <tr><td>model-fit</td><td>Haiku</td><td>The ask and the end of the last reply</td><td>Each ask</td></tr>
+        <tr><td>model-fit</td><td>TypeSafe (Jev)</td><td>The same text Haiku sees</td><td>Only with shadow labels on</td></tr>
+        <tr><td>hindsight, toolbelt</td><td>Nothing outside Claude</td><td>Counts are kept in the plugin store</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+</body>
+</html>
