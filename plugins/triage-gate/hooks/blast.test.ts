@@ -90,6 +90,21 @@ test('a dotted module name keeps its dots when an import resolves to it', async 
   expect(used).toBe(2)
 })
 
+test('a class name in docs or config does not count as a use', async () => {
+  // #given
+  const grepped = [
+    'src/main/java/app/CallService.java:  private final CallLog log;',
+    'docs/system-map.md:CallLog holds one row per call.',
+    'src/main/resources/application.yml:  table: CallLog',
+  ].join('\n')
+
+  // #when
+  const used = countUsers(grepped, 'src/main/java/app/CallLog.java')
+
+  // #then
+  expect(used).toBe(1)
+})
+
 test('Python, C, Rust and Ruby files are found through their own import forms', async () => {
   // #given
   const cases: [string, string, boolean][] = [

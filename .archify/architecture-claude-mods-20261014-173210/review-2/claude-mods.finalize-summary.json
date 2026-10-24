@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "D:\\claude-mods\\.archify\\architecture-claude-mods-20261014-173210\\candidate.json",
+    "sha256": "490a266f43b92d3bac098f7826abf9e208983a4482e0fc102dee104128f58f44",
+    "bytes": 5638
+  },
+  "artifact": {
+    "path": "D:\\claude-mods\\.archify\\architecture-claude-mods-20261014-173210\\claude-mods.html",
+    "sha256": "cf55753e5809ba0b100835a2be8ce0dfff7dfe257003d0d1f837688bcd4fef0d",
+    "bytes": 837223
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "D:\\claude-mods\\.archify\\architecture-claude-mods-20261014-173210\\review-2\\claude-mods.finalize.json",
+    "summaryReceipt": "D:\\claude-mods\\.archify\\architecture-claude-mods-20261014-173210\\review-2\\claude-mods.finalize-summary.json",
+    "browserCheckReceipt": "D:\\claude-mods\\.archify\\architecture-claude-mods-20261014-173210\\review-2\\claude-mods.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.1.0",
+    "availableVersion": "3.1.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-14T06:53:32.420Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 7823,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "hindsight-claudemd",
+            "from": "hindsight",
+            "to": "claudemd",
+            "label": "Save fix",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "right": {
+            "id": "toolbelt-store",
+            "from": "toolbelt",
+            "to": "store",
+            "label": "usage",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "point": [
+            614,
+            396
+          ]
+        }
+      ],
+      "detours": [],
+      "truncated": false
+    },
+    "hints": [
+      "hindsight → claudemd crosses toolbelt → store: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

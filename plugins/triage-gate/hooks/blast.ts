@@ -129,7 +129,7 @@ function names(line: string, from: string, target: string) {
 }
 
 /**
- * How many other files use `target`, from `git grep --full-name` lines (`file:text`) for `usersQuery`. A relative
+ * How many other code files use `target`, from `git grep --full-name` lines (`file:text`) for `usersQuery`. A relative
  * import from a TypeScript or JavaScript file counts only when it resolves to `target`, so a `./pane` beside another
  * `pane.ts` does not.
  */
@@ -141,7 +141,7 @@ export function countUsers(grepOutput: string, target: string) {
     const cut = line.indexOf(':')
     const from = line.slice(0, cut)
 
-    if (cut > 0 && from !== target && (!isResolved || names(line.slice(cut + 1), from, target))) {
+    if (cut > 0 && from !== target && CODE_FILE.test(from) && (!isResolved || names(line.slice(cut + 1), from, target))) {
       users.add(from)
     }
   }

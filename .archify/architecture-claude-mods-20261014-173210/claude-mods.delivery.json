@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "b12c7589-f458-4e64-aed9-19f5802efa33",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "D:\\claude-mods\\.archify\\architecture-claude-mods-20261014-173210\\candidate.json",
+  "output": "D:\\claude-mods\\.archify\\architecture-claude-mods-20261014-173210\\claude-mods.html",
+  "specification": {
+    "sha256": "490a266f43b92d3bac098f7826abf9e208983a4482e0fc102dee104128f58f44",
+    "bytes": 5638
+  },
+  "artifact": {
+    "sha256": "cf55753e5809ba0b100835a2be8ce0dfff7dfe257003d0d1f837688bcd4fef0d",
+    "bytes": 837223
+  }
+}
