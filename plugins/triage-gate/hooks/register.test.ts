@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { ChangedFile, Triage } from '../types'
-import { reviewScope } from './review'
+import { fixPrompt, reviewScope } from './review'
 
 type World = {
   numstat: string
@@ -18,6 +18,7 @@ type World = {
   draft?: string
   stagedRaw?: string
   patch?: string
+  reviewGuide?: string
 }
 
 const REVIEW = `The pager can report one page too many.
@@ -123,6 +124,7 @@ function world(on: On, w: World) {
       return ok(rawOf(w.numstat.split('\n').filter(Boolean).map(line => [line.split('\t')[2] ?? '', ZERO, 'M'])))
     }
     if (verb === 'diff') return ok(w.patch ?? patchOf(w.numstat))
+    if (verb === 'show' && rest[0] === 'HEAD:REVIEW.md') return w.reviewGuide === undefined ? ok('', 128) : ok(w.reviewGuide)
     if (verb === 'ls-files') return ok(w.untracked ?? '')
     if (verb === 'hash-object') return ok(w.hashes ?? '')
     if (verb === 'grep') {
@@ -339,6 +341,49 @@ test('the findings of a Codex review can be sent to Claude to fix', async ($, on
 
   // #then
   expect(seen.filled).toEqual([expect.stringContaining('[P1] Fix the off-by-one in pageCount (src/pager.ts:12-14)')])
+})
+
+test('Claude judges every finding by its consequence, and Codex tags are only a hint', () => {
+  // #given
+  const finding = (priority: string, title: string) => ({ priority, title, at: 'src/a.ts:1', body: 'why' })
+
+  // #when
+  const prompt = fixPrompt([finding('P1', 'Rare zone'), finding('P0', 'Loses rows'), finding('P3', 'Old race')])
+
+  // #then
+  expect(prompt).toContain('Its P tags are a hint')
+  expect(prompt).toContain('a normal user doing normal work')
+  expect(prompt).toContain('If REVIEW.md exists, its severity rules decide.')
+  expect(prompt).not.toContain('Fix these if the trace holds')
+  for (const title of ['[P1] Rare zone', '[P0] Loses rows', '[P3] Old race']) expect(prompt.split(title)).toHaveLength(2)
+})
+
+test('Codex is given the review guide as committed, not the working copy', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n', key: 'k', reviewGuide: '# Review guide\n\nZero findings is a valid review.\n' })
+  await start($)
+  await triage($)
+
+  // #when
+  await triage($, 'codex')
+
+  // #then
+  expect(seen.git).toContain('show HEAD:REVIEW.md')
+  expect(seen.codexInput).toContain("The repository's review guide (REVIEW.md, as committed)")
+  expect(seen.codexInput).toContain('Zero findings is a valid review.')
+})
+
+test('Codex gets no review guide when the repository has no committed REVIEW.md', async ($, on) => {
+  // #given
+  const seen = world(on, { numstat: '12\t3\tsrc/pager.ts\n', key: 'k' })
+  await start($)
+  await triage($)
+
+  // #when
+  await triage($, 'codex')
+
+  // #then
+  expect(seen.codexInput).not.toContain('review guide')
 })
 
 const write = ($: Engine, path: string, lines: number) =>

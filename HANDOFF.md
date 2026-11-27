@@ -10,7 +10,7 @@ Check model-fit 0.7.0 in a live session: run `/reload-plugins`, grow a conversat
 
 | Plugin | Version | Tests | Verified live? |
 |---|---|---|---|
-| `triage-gate` | 0.9.2 | 85 | Partly: 0.1.0 made a real Jev call and held, and a Codex run finished (2026-10-10); 0.9.0's "which hunk" questions checked against the live API on this repo's diff (2026-10-13); 0.9.1 compared on 1.13 and 1.14 live (2026-10-16) |
+| `triage-gate` | 0.10.0 | 88 | Partly: 0.1.0 made a real Jev call and held, and a Codex run finished (2026-10-10); 0.9.0's "which hunk" questions checked against the live API on this repo's diff (2026-10-13); 0.9.1 compared on 1.13 and 1.14 live (2026-10-16); 0.10.0's review prompt replayed against 0.9.2 on 8 past PRs with `eval/replay.ts` (2026-11-26). Its fix prompt and REVIEW.md reading are tested only in the suite |
 | `model-fit` | 0.8.2 | 42 | Partly: band seen in terminal (0.2.0); Jev `score` keys "0".."2" confirmed live on 1.13 and 1.14 (2026-10-16) |
 | `hindsight` | 0.4.1 | 33 | Partly: 0.2.0 recorded snags, proposed a fix and handed off to the retro (2026-10-12) |
 | `toolbelt` | 0.3.0 | 51 | No: tests, tsc and validate only; `/reload-plugins` then `/unused` not yet run live (see docs/toolbelt-rework-plan.md section 9) |

@@ -7,12 +7,14 @@ const FINDINGS_ASKED = 5
 const ASKS_KEPT = 3
 const ASK_CHARS = 600
 export const BRIEF_CHARS = 900
+export const GUIDE_CHARS = 8000
 
 export const BRIEF_PROMPT = `A reviewer who has not seen this conversation will check the uncommitted changes against what was wanted. In at most six short lines, with no preamble, say: the requirement those changes implement, the behaviour that should now hold, and what was deliberately left out of scope.`
 
 export const addAsk = (asks: string[], text: string) => [...asks, text.slice(0, ASK_CHARS)].slice(-ASKS_KEPT)
 
-export type Intent = { asks: string[]; brief?: string }
+/** `guide` is the repository's REVIEW.md as committed, so a change cannot edit the checks it is reviewed against. */
+export type Intent = { asks: string[]; brief?: string; guide?: string }
 
 export function reviewScope(judged: Triage | null, focus: string) {
   const blast = judged?.blast
@@ -55,11 +57,19 @@ export function reviewPrompt(judged: Triage | null, focus: string, intent: Inten
     intent.asks.length > 0 || intent.brief !== undefined
       ? 'Report where the code does not do what was asked, as well as plain bugs.'
       : '',
+    intent.guide === undefined
+      ? ''
+      : `The repository's review guide (REVIEW.md, as committed). Follow it. Where it is more specific than the rules below, it wins:\n${intent.guide}`,
     judged !== null && judged.reasons.length > 0 ? `An earlier triage flagged: ${judged.reasons.join('; ')}.` : '',
     focus === '' ? '' : `Focus on: ${focus}`,
-    `Report at most ${FINDINGS_ASKED} findings, the most serious first. Write one or two sentences of summary, then a line "Review comments:", then each finding in exactly this shape:`,
-    '- [P1] <short title> -- <file>:<line>\n  <one or two sentences on what goes wrong and when>',
-    'Use P1 for a bug that will bite and P2 for the rest. If nothing is wrong, say so and list no findings.',
+    [
+      'Report a finding only when you can trace it. Start at a supported entry point: a user action, a route the app calls, a job, an event, or data the schema allows. Follow it through the changed lines to a wrong result someone would see.',
+      'Then look for the strongest reason it cannot happen: an earlier guard, a type, a database constraint, server-side validation, or a caller that never sends that value. Drop the finding if one holds.',
+      'Leave out style, naming, formatting and anything a linter or type checker would catch.',
+    ].join(' '),
+    `Report at most ${FINDINGS_ASKED} findings, one per cause, the most serious first. Write one or two sentences of summary, then a line "Review comments:", then each finding in exactly this shape:`,
+    '- [P1] <short title> -- <file>:<line>\n  <the entry point, what happens, and the wrong result>',
+    'Use P1 only when the wrong result reaches a normal user doing normal work, or breaks a rule the repository writes down; use P0 if it loses data or breaks security. A rare setup, such as an unusual time zone, a tiny screen or years-old data, is P2 at most, as is a real nit not worth a fix round. Use P3 for a bug the code had before this change. Zero findings is a valid result: if nothing survives, say so and list none.',
   ]
     .filter(Boolean)
     .join('\n\n')
@@ -101,10 +111,25 @@ export const tookOf = (ms: number) => {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
 }
 
-export function fixPrompt(findings: Finding[]): string {
-  const listed = findings
-    .map(one => `- [${one.priority}] ${one.title} (${one.at})\n  ${one.body}`)
-    .join('\n')
+export const isImportant = (one: Finding) => one.priority === 'P0' || one.priority === 'P1'
 
-  return `Codex reviewed the uncommitted change and reported the findings below. Check each one against the code. Fix the ones that are real, and tell me which you rejected and why.\n\n${listed}`
+const listOf = (findings: Finding[]) =>
+  findings.map(one => `- [${one.priority}] ${one.title} (${one.at})\n  ${one.body}`).join('\n')
+
+/**
+ * Replays showed Codex tagging most findings P1 whatever the prompt said, so the tag cannot decide
+ * what gets fixed: Claude applies the consequence test to every finding itself.
+ */
+export function fixPrompt(findings: Finding[]): string {
+  return [
+    'Codex reviewed the uncommitted change. Its P tags are a hint and often overstate; P3 means Codex thinks the code had it before this change. Judge each finding yourself:',
+    [
+      '1. Trace it in the code from a supported entry point to the wrong result, or name the guard that stops it.',
+      '2. Fix it only if the trace holds and the wrong result reaches a normal user doing normal work, loses data, breaks security, or breaks a rule the repository writes down. If REVIEW.md exists, its severity rules decide.',
+      '3. Otherwise change no code. Answer it in one line: wrong, intentional, rare, or there before this change, with the reason. Record a follow-up worth keeping where the repository keeps known gaps.',
+    ].join('\n'),
+    'Fix the whole class of bug, but nothing beyond it without asking me. Rejecting a finding is a valid outcome.',
+    `Findings:\n${listOf(findings)}`,
+    'Finish with a table: finding, verdict (fixed, wrong, intentional, rare, pre-existing), how often times how bad (each 1 to 10), and the guard or the fix.',
+  ].join('\n\n')
 }

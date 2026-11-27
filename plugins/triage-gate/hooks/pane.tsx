@@ -4,7 +4,7 @@ import type { Flag, Review, Triage } from '../types'
 import { startWith } from './blast'
 import { MEANS, placeText } from './jev'
 import { BADGE, changeLine, coverageOf, diagnosticsOf, reviewHeadline, subjectKey } from './report'
-import { fixPrompt, tookOf } from './review'
+import { fixPrompt, isImportant, tookOf } from './review'
 import { clearOf, flagsOf, groupsLine, testsNoteOf } from './verdict'
 
 export type PaneView = {
@@ -100,7 +100,7 @@ export function paneOf(ui: Elements[RenderInput<'Pane'>['surface']], view: PaneV
           {reviewed.findings.map(one => (
             <Box flexDirection="column" marginTop={1}>
               <Box>
-                <Text bold color={one.priority === 'P1' ? 'error' : 'warning'}>
+                <Text bold color={isImportant(one) ? 'error' : 'warning'}>
                   {one.priority}{' '}
                 </Text>
                 <Box flexShrink={1}>

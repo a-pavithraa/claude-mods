@@ -7,7 +7,7 @@ import { addWrite, emptyTally, guidePrompt, sizeLevel, sizeNote } from './guide'
 import { JEV_MODEL, JEV_URL, PATCH_CHARS, askOf, parseJev } from './jev'
 import { paneOf } from './pane'
 import { commitPrompt, detailsText, reviewHeadline, subjectKey, summaryOf } from './report'
-import { BRIEF_CHARS, BRIEF_PROMPT, addAsk, lastLine, parseReview, reviewPrompt, reviewScope } from './review'
+import { BRIEF_CHARS, BRIEF_PROMPT, GUIDE_CHARS, addAsk, lastLine, parseReview, reviewPrompt, reviewScope } from './review'
 import { commitIn } from './shell'
 import { verdictOf } from './verdict'
 
@@ -261,7 +261,8 @@ async function runCodex($: EngineInterface, options: PluginOptions, focus = '') 
   await update($, review, (): Review => ({ status: 'running', covers, tookMs: 0, doing: 'Writing down what was asked for…' }))
   const brief = await briefOf($)
   const told = brief === undefined ? {} : { brief }
-  const intent = { asks: await read($, asks), ...told }
+  const guide = (await git($, ['show', 'HEAD:REVIEW.md'], inside(judged?.subject?.cwd)))?.trim()
+  const intent = { asks: await read($, asks), ...told, ...(guide ? { guide: guide.slice(0, GUIDE_CHARS) } : {}) }
   const isWindows = (await $.env.get('OS')) === 'Windows_NT'
   const model = typeof options.codexModel === 'string' && options.codexModel !== '' ? ['-m', options.codexModel] : []
   const codex = ['codex', 'exec', 'review', ...model, '-']
