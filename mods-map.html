@@ -96,12 +96,6 @@
     <div class="head" role="columnheader"><b>Shows you</b>where it appears</div>
     <div class="head" role="columnheader"><b>Can change</b>its one power</div>
 
-    <div class="cell mod gate">triage-gate<small>a gate before commits</small></div>
-    <div class="cell" data-col="Wakes up when"><ul><li>Claude runs <code>git commit</code></li><li>you type <code>/gate</code></li></ul></div>
-    <div class="cell" data-col="Decides with"><ul><li>Size, reach and sensitive paths from git <span class="tag t-local">local</span></li><li>Jev risk check and where to look <span class="tag t-opt">opt-in key</span></li><li>Codex review <span class="tag t-ask">on request</span></li></ul></div>
-    <div class="cell" data-col="Shows you"><ul><li>Triage pane: verdict, why, files to read first</li><li>A toast when a review is recommended</li></ul></div>
-    <div class="cell act" data-col="Can change">Holds the commit until you <code>/gate approve</code></div>
-
     <div class="cell mod fit">model-fit<small>right model for the ask</small></div>
     <div class="cell" data-col="Wakes up when"><ul><li>you send an ask</li><li>a turn ends</li></ul></div>
     <div class="cell" data-col="Decides with"><ul><li>Haiku labels the ask: trivial, normal or complex</li><li>Turn cost and context size <span class="tag t-local">local</span></li><li>Jev shadow label, for comparison only <span class="tag t-opt">opt-in</span></li></ul></div>
@@ -130,7 +124,6 @@
   <div class="legend">
     <span><span class="tag t-local">local</span>stays on your machine</span>
     <span><span class="tag t-opt">opt-in</span>off until you add a TypeSafe key or turn it on</span>
-    <span><span class="tag t-ask">on request</span>runs only when you ask</span>
   </div>
 
   <section class="out">
@@ -138,8 +131,6 @@
     <table>
       <thead><tr><th>Mod</th><th>Sent to</th><th>What</th><th>When</th></tr></thead>
       <tbody>
-        <tr><td>triage-gate</td><td>TypeSafe (Jev)</td><td>File paths and up to 60k characters of the diff</td><td>Each check, only with a key</td></tr>
-        <tr><td>triage-gate</td><td>Codex</td><td>The changed files</td><td>Only on <code>/gate codex</code></td></tr>
         <tr><td>model-fit</td><td>Haiku</td><td>The ask and the end of the last reply</td><td>Each ask</td></tr>
         <tr><td>model-fit</td><td>TypeSafe (Jev)</td><td>The same text Haiku sees</td><td>Only with shadow labels on</td></tr>
         <tr><td>hindsight, toolbelt</td><td>Nothing outside Claude</td><td>Counts are kept in the plugin store</td><td>—</td></tr>
