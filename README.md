@@ -4,13 +4,14 @@ Claude Code plugins that keep you in the loop while an agent writes your code.
 
 | Plugin | Kind | In one line |
 |---|---|---|
-| [triage-gate](plugins/triage-gate) | mod | Stops risky commits until you have looked at them |
 | [hindsight](plugins/hindsight) | mod | Spots the same snag coming back and offers a fix |
 | [toolbelt](plugins/toolbelt) | mod | Finds the skills, plugins and MCP servers you never use |
 | [model-fit](plugins/model-fit) | mod | Tells you when the model or effort is too big or too small for the ask |
 | [quiz-me](plugins/quiz-me) | skill | Quizzes you on what the session changed |
 
 A **mod** is a plugin that runs code inside Claude Code and can show you panes, bands, buttons and toasts. A **skill** is instructions Claude follows. Each plugin installs on its own. Click a name for the full details.
+
+triage-gate, which holds a risky commit until you have looked at it, moved to its own repository: [a-pavithraa/triage-gate](https://github.com/a-pavithraa/triage-gate). If you installed it from here, run `claude plugin uninstall triage-gate@my-mods` and install it from there.
 
 [![What each mod listens to, decides with, shows and can change, and what leaves your machine](media/mods-map.png)](mods-map.html)
 
@@ -19,15 +20,12 @@ A **mod** is a plugin that runs code inside Claude Code and can show you panes, 
 You need:
 
 - A Claude Code build with mods (tested on 2.1.296; the mod API is early access and can change).
-- Git, for triage-gate.
-- Optional: the Codex CLI, for `/gate codex`.
 - Optional: the `mattpocock-skills` plugin, for `/hindsight`'s hand-off to `/mattpocock-skills:retro`.
 
 From the root of a clone:
 
 ```
 claude plugin marketplace add .
-claude plugin install triage-gate@my-mods
 claude plugin install hindsight@my-mods
 claude plugin install toolbelt@my-mods
 claude plugin install model-fit@my-mods
@@ -36,36 +34,7 @@ claude plugin install quiz-me@my-mods
 
 Sessions run an installed copy, so after editing a plugin here, bump its version in `plugin.json`, then run `claude plugin marketplace update my-mods` and `claude plugin update <plugin>@my-mods`, and start a new session.
 
-Panes and bands only draw where the surface supports them. The terminal is tested, and so is the desktop app for the Triage pane.
-
-## triage-gate
-
-**What it does:** before Claude commits, it scores the change and picks one of three verdicts:
-
-- **No review trigger:** the commit goes through. This does not mean the change is safe.
-- **Review recommended:** the commit goes through, and a toast says why you should read it.
-- **Hold:** the commit is blocked until you approve it.
-
-The score looks at size, how many files depend on the changed ones, and sensitive paths (auth, secrets, `.env` ...). With a TypeSafe key, the Jev model also checks for security, data, money, concurrency and API risks.
-
-<img src="media/triage-gate-hold.png" alt="Triage pane holding a 13-file rename: why, files to read first, a Codex review and where Jev looked" width="480">
-
-A two-line change is held too when Jev judges it likely to touch security, and it names the line:
-
-![Terminal: Claude lets admin sessions skip the expiry check, and triage-gate holds the commit](media/triage-gate-security.png)
-
-**How to use it:**
-
-- `/gate` checks the current change and opens the Triage pane: the verdict, why, and which files to read first.
-- `/gate approve` approves the change and puts the commit request back in your prompt box.
-- `/gate details` prints everything as text.
-- `/gate codex` asks Codex for a review of the changed files.
-
-**Setup:** `claude plugin configure triage-gate@my-mods` to add a TypeSafe key (optional). Without one, it uses the local checks only.
-
-**Data:** with a key, each check sends file paths and up to 60k characters of the diff to TypeSafe. Codex runs only when you ask.
-
-**Why a mod:** it has to stop the commit, and the pane and buttons are how you review and approve.
+Panes and bands only draw where the surface supports them. The terminal is tested.
 
 ## hindsight
 

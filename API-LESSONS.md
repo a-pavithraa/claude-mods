@@ -20,7 +20,7 @@ Known signatures:
 
 ## What the validator enforces
 
-- `$` may be passed only to top-level functions declared in the same file, never to an imported one. A helper module stays pure; the hooks file reads state and passes data and callbacks in (see triage-gate's `pane.tsx`).
+- `$` may be passed only to top-level functions declared in the same file, never to an imported one. A helper module stays pure; the hooks file reads state and passes data and callbacks in (see toolbelt's `pane.tsx`).
 - `read`/`update` need an atom declared in the hooks file itself, not imported.
 - `$.prompt.submit` from `command.run` is refused; use `$.prompt.fill`.
 
@@ -35,7 +35,7 @@ Known signatures:
 - `session.measure` pushes context tokens after each turn.
 - On Windows, start Codex through `cmd.exe /d /c codex …`; a bare spawn fails with ENOENT.
 - Type-check a mod with `npx -p typescript@5.6.3 tsc -p <mod>`. The engine writes `.claude-plugin/types/` when it loads the mod; before that, copy them from another mod.
-- prismantis (github.com/NahumLitvin/prismantis), a display mod, is the source of triage-gate's shell parser. Not installed.
+- prismantis (github.com/NahumLitvin/prismantis), a display mod, is the source of triage-gate's shell parser (now in github.com/a-pavithraa/triage-gate). Not installed.
 
 ## toolbelt, checked against 2.1.296
 - `$.fs.read` rejects any file over 4 MiB, which hid 15 of 114 transcripts. `~/.claude.json` (134 KB) is read with `${home}/.claude.json`, the same way the old code read `${home}/.claude/projects/...`. **A1** is exercised by the mock world only; confirm it in a live `/unused`.
